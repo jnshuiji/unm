@@ -8,7 +8,7 @@ android {
     namespace = "pochita"
     compileSdk = 37
     defaultConfig {
-        applicationId = "pochita.lsposed"
+        applicationId = "com.pochita.unm"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
@@ -37,6 +37,10 @@ android {
       resources {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -71,6 +75,7 @@ dependencies {
   // Local tests: jUnit, coroutines, Android runner
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.org.json)
 
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)
@@ -85,4 +90,8 @@ dependencies {
 
   compileOnly(libs.libxposed.api)
   implementation(libs.libxposed.service)
+
+  // QuickJS engine and OkHttp for audio source matching and rule execution
+  implementation(libs.quickjs)
+  implementation(libs.okhttp)
 }

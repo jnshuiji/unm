@@ -1,5 +1,7 @@
 package pochita.hook
 
+import android.app.Application
+import android.content.Context
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
@@ -8,78 +10,69 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 /**
  * LSPosed (API 102) 模块核心入口类。
- *
  * 必须在 META-INF/xposed/java_init.list 中声明此完整类名。
  */
 class MainHook : XposedModule() {
 
     companion object {
-        private const val TAG = "PochitaHook"
+        private const val TAG = "NeteaseUNMHook"
+        private const val TARGET_PACKAGE = "com.netease.cloudmusic"
+        private val initialized = AtomicBoolean(false)
     }
 
-    /**
-     * 模块被注入目标进程后的最初回调。
-     */
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         super.onModuleLoaded(param)
-        log(Log.INFO, TAG, "Module loaded in process: ${param.processName}, isSystemServer: ${param.isSystemServer}")
+        log(Log.INFO, TAG, "UNM Module loaded in process: ${param.processName}")
     }
 
-    /**
-     * 当目标应用的类加载器就绪、准备实例化 Application 时回调。
-     * 绝大部分业务 Hook 建议在此生命周期执行。
-     */
     override fun onPackageReady(param: PackageReadyParam) {
         super.onPackageReady(param)
-        log(Log.INFO, TAG, "Package ready: ${param.packageName}, classloader: ${param.classLoader}")
+        if (param.packageName != TARGET_PACKAGE) return
 
-        // 1. 示例：跨进程读取模块在 UI 端保存的 RemotePreferences 配置 (只读)
+        log(Log.INFO, TAG, "NetEase Cloud Music ready: ${param.packageName}")
+
+
+        // Hook Instrumentation.callApplicationOnCreate 获取解壳后的真实 Application 与 ClassLoader
         try {
-            val prefs = getRemotePreferences("config")
-            val isModuleEnabled = prefs.getBoolean("enable_hook", true)
-            log(Log.DEBUG, TAG, "Config read: enable_hook=$isModuleEnabled")
-            if (!isModuleEnabled) return
-        } catch (t: Throwable) {
-            log(Log.WARN, TAG, "RemotePreferences not available or failed to load: ${t.message}")
-        }
+            val instrumentationClass = param.classLoader.loadClass("android.app.Instrumentation")
+            val callAppOnCreateMethod = instrumentationClass.getDeclaredMethod(
+                "callApplicationOnCreate",
+                Application::class.java
+            )
 
-        // 2. 示例：Hook 目标方法 (基于 OkHttp 式链式拦截器)
-        // try {
-        //     val targetClass = param.classLoader.loadClass("com.example.TargetClass")
-        //     val targetMethod = targetClass.getDeclaredMethod("targetMethod", String::class.java)
-        //
-        //     hook(targetMethod)
-        //         .setPriority(XposedInterface.PRIORITY_DEFAULT)
-        //         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-        //         .intercept { chain ->
-        //             val arg0 = chain.args.getOrNull(0)
-        //             log(Log.DEBUG, TAG, "Before calling targetMethod with arg: $arg0")
-        //
-        //             // 执行原方法或下一个拦截器
-        //             val result = chain.proceed()
-        //
-        //             log(Log.DEBUG, TAG, "After calling targetMethod, result: $result")
-        //             result
-        //         }
-        // } catch (t: Throwable) {
-        //     log(Log.ERROR, TAG, "Hook targetMethod failed", t)
-        // }
+            hook(callAppOnCreateMethod)
+                .setPriority(XposedInterface.PRIORITY_HIGHEST)
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                .intercept { chain ->
+                    val app = chain.args.getOrNull(0) as? Application
+                    if (app != null && app.packageName == TARGET_PACKAGE) {
+                        if (initialized.compareAndSet(false, true)) {
+                            log(Log.INFO, TAG, "Application onCreate: ${app.javaClass.name}, initializing NetEaseHook...")
+                            try {
+                                NetEaseHook.init(this@MainHook, app.classLoader, app)
+                                log(Log.INFO, TAG, "NetEaseHook initialized successfully!")
+                            } catch (t: Throwable) {
+                                log(Log.ERROR, TAG, "NetEaseHook.init failed", t)
+                            }
+                        }
+                    }
+                    chain.proceed()
+                }
+            log(Log.INFO, TAG, "Hooked Instrumentation.callApplicationOnCreate successfully")
+        } catch (t: Throwable) {
+            log(Log.ERROR, TAG, "Failed to hook callApplicationOnCreate", t)
+        }
     }
 
-    /**
-     * API 102 热重载生命周期回调：在旧模块代码中触发。
-     * 返回 true 声明旧代码已准备好卸载，允许框架加载新版模块代码。
-     */
     override fun onHotReloading(param: HotReloadingParam): Boolean {
         log(Log.INFO, TAG, "Module is hot reloading...")
         return true
     }
 
-    /**
-     * API 102 热重载生命周期回调：在新模块代码中触发。
-     */
     override fun onHotReloaded(param: HotReloadedParam) {
         super.onHotReloaded(param)
         log(Log.INFO, TAG, "Module hot reloaded successfully!")

@@ -1,3 +1,7 @@
 <resources>
-    <string name="app_name">pochita</string>
+    <string name="app_name">云村换源</string>
+    <string name="xposed_description">基于 LSPosed API 102 与 QuickJS 的网易云音乐音源替换模块，支持动态规则热同步与本地高音质兜底</string>
+    <string-array name="xposed_scope">
+        <item>com.netease.cloudmusic</item>
+    </string-array>
 </resources>

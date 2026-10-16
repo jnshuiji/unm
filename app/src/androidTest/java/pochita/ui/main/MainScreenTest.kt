@@ -14,13 +14,26 @@ class MainScreenTest {
 
   @Before
   fun setup() {
-    composeTestRule.setContent { MainScreen(FAKE_DATA) }
+    composeTestRule.setContent {
+      MainScreenContent(
+        status = pochita.data.LsposedStatus(
+          isActivated = true,
+          frameworkName = "LSPosed",
+          frameworkVersion = "1.9.3",
+          apiVersion = 102,
+        ),
+        config = pochita.data.ModuleConfig(),
+        onRuleUrlChanged = {},
+        onUpdateRuleClicked = {},
+        onResetRuleClicked = {},
+      )
+    }
   }
 
   @Test
-  fun firstItem_exists() {
-    FAKE_DATA.forEach { composeTestRule.onNodeWithText("Hello $it!").assertExists() }
+  fun elements_exist() {
+    composeTestRule.onNodeWithText("动态规则配置").assertExists()
+    composeTestRule.onNodeWithText("立即同步").assertExists()
+    composeTestRule.onNodeWithText("恢复内置").assertExists()
   }
 }
-
-private val FAKE_DATA = listOf("Sample1", "Sample2", "Sample3")

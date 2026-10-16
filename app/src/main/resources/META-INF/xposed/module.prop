@@ -1,5 +1,5 @@
 minApiVersion=102
 targetApiVersion=102
 defaultExceptionMode=protective
-staticScope=false
+staticScope=true
 autoHotReload=true
