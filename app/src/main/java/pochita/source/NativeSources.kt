@@ -1,22 +1,12 @@
 package pochita.source
 
-import android.util.Log
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
-import kotlin.math.abs
 import org.json.JSONObject
-import pochita.crypto.EApiCrypto
+import pochita.codec.EApiCrypto
+import pochita.common.UnmHttpClient
+import pochita.common.UnmLogger
 import pochita.model.MatchedAudio
 import pochita.model.SongInfo
-
-private fun logW(tag: String, msg: String) {
-    try {
-        android.util.Log.w(tag, msg)
-    } catch (_: Throwable) {
-        System.err.println("[$tag] $msg")
-    }
-}
 
 interface AudioSource {
     val name: String
@@ -51,7 +41,7 @@ object BodianSource : AudioSource {
             httpPost(adUrl, data, headers)
             lastAdUnlockTime = now
         } catch (t: Throwable) {
-            logW(TAG, "Failed to send Bodian ad unlock: ${t.message}")
+            UnmLogger.w(TAG, "Failed to send Bodian ad unlock: ${t.message}", t)
         }
     }
 
@@ -83,7 +73,7 @@ object BodianSource : AudioSource {
                 val item = absList.getJSONObject(i)
                 val duration = item.optLong("DURATION", 0L) * 1000L
                 val rid = item.optString("MUSICRID").substringAfter("MUSIC_")
-                if (song.durationMs > 0 && abs(duration - song.durationMs) < 6000) {
+                if (song.durationMs > 0 && AudioValidator.isDurationAcceptable(song.durationMs, duration)) {
                     selectedRid = rid
                     break
                 }
@@ -122,10 +112,14 @@ object BodianSource : AudioSource {
 
             val data = trackJson.optJSONObject("data") ?: return null
             val audioUrl = data.optString("audioHttpsUrl").ifEmpty { data.optString("audioUrl") }
-            if (audioUrl.isEmpty() || audioUrl.contains("588957081") || audioUrl.contains("563182854")) return null
+            if (!AudioValidator.isValidAudioUrl(audioUrl)) {
+                UnmLogger.w(TAG, "Bodian returned invalid or teaser audio URL: $audioUrl")
+                return null
+            }
 
             val durationSec = data.optInt("duration", 0)
-            if (song.durationMs > 60000 && durationSec in 1..30) {
+            if (AudioValidator.isTeaserDuration(song.durationMs, durationSec)) {
+                UnmLogger.w(TAG, "Bodian audio rejected as teaser clip: durationSec=$durationSec, songDurationMs=${song.durationMs}")
                 return null
             }
 
@@ -135,7 +129,7 @@ object BodianSource : AudioSource {
                 source = name,
             )
         } catch (t: Throwable) {
-            logW(TAG, "Bodian match failed: ${t.message}")
+            UnmLogger.w(TAG, "Bodian match failed: ${t.message}", t)
             null
         }
     }
@@ -163,7 +157,7 @@ object KuwoSource : AudioSource {
                 val item = absList.getJSONObject(i)
                 val duration = item.optLong("DURATION", 0L) * 1000L
                 val rid = item.optString("MUSICRID").substringAfter("MUSIC_")
-                if (song.durationMs > 0 && abs(duration - song.durationMs) < 6000) {
+                if (song.durationMs > 0 && AudioValidator.isDurationAcceptable(song.durationMs, duration)) {
                     selectedRid = rid
                     break
                 }
@@ -177,8 +171,8 @@ object KuwoSource : AudioSource {
             val trackUrl = "http://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_$selectedRid"
             val trackRes = httpGet(trackUrl, headers = mapOf("User-Agent" to "okhttp/3.10.0")) ?: return null
             val audioUrl = Regex("http[^\r\n\"'\t ]+").find(trackRes)?.value ?: return null
-            if (audioUrl.contains("588957081") || audioUrl.contains("563182854")) {
-                logW(TAG, "Kuwo antiserver returned teaser/prompt audio, rejecting.")
+            if (!AudioValidator.isValidAudioUrl(audioUrl)) {
+                UnmLogger.w(TAG, "Kuwo antiserver returned teaser/prompt audio, rejecting: $audioUrl")
                 return null
             }
 
@@ -188,7 +182,7 @@ object KuwoSource : AudioSource {
                 source = name,
             )
         } catch (t: Throwable) {
-            logW(TAG, "Kuwo match failed: ${t.message}")
+            UnmLogger.w(TAG, "Kuwo match failed: ${t.message}", t)
             null
         }
     }
@@ -231,13 +225,18 @@ object MiguSource : AudioSource {
             if (playUrl.isEmpty()) return null
 
             val fullUrl = if (playUrl.startsWith("http")) playUrl else "http:$playUrl"
+            if (!AudioValidator.isValidAudioUrl(fullUrl)) {
+                UnmLogger.w(TAG, "Migu returned invalid audio URL: $fullUrl")
+                return null
+            }
+
             MatchedAudio(
                 url = fullUrl,
                 br = 320000,
                 source = name,
             )
         } catch (t: Throwable) {
-            logW(TAG, "Migu match failed: ${t.message}")
+            UnmLogger.w(TAG, "Migu match failed: ${t.message}", t)
             null
         }
     }
@@ -270,7 +269,10 @@ object KugouSource : AudioSource {
             val trackJson = JSONObject(trackRes)
             val urlArr = trackJson.optJSONArray("url")
             val audioUrl = urlArr?.optString(0) ?: ""
-            if (audioUrl.isEmpty()) return null
+            if (!AudioValidator.isValidAudioUrl(audioUrl)) {
+                UnmLogger.w(TAG, "Kugou returned invalid audio URL: $audioUrl")
+                return null
+            }
 
             MatchedAudio(
                 url = audioUrl,
@@ -278,44 +280,51 @@ object KugouSource : AudioSource {
                 source = name,
             )
         } catch (t: Throwable) {
-            logW(TAG, "Kugou match failed: ${t.message}")
+            UnmLogger.w(TAG, "Kugou match failed: ${t.message}", t)
             null
         }
     }
 }
 
-fun httpGet(urlStr: String, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 5000): String? {
+/**
+ * Synchronous HTTP GET helper backed by unified [UnmHttpClient].
+ */
+fun httpGet(
+    urlStr: String,
+    headers: Map<String, String> = emptyMap(),
+    timeoutMs: Int = 5000
+): String? {
     return try {
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
-            instanceFollowRedirects = true
-            headers.forEach { (k, v) -> setRequestProperty(k, v) }
-        }
-        if (conn.responseCode in 200..299) {
-            conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        } else null
-    } catch (_: Throwable) {
+        val response = UnmHttpClient.get(urlStr, headers = headers, timeoutMs = timeoutMs.toLong())
+        response.bodyStringOrNull()
+    } catch (t: Throwable) {
+        UnmLogger.w("NativeSources", "httpGet error for $urlStr: ${t.message}", t)
         null
     }
 }
 
-fun httpPost(urlStr: String, body: String, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 5000): String? {
+/**
+ * Synchronous HTTP POST helper backed by unified [UnmHttpClient].
+ */
+fun httpPost(
+    urlStr: String,
+    body: String,
+    headers: Map<String, String> = emptyMap(),
+    timeoutMs: Int = 5000
+): String? {
     return try {
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
-            doOutput = true
-            headers.forEach { (k, v) -> setRequestProperty(k, v) }
-        }
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        if (conn.responseCode in 200..299) {
-            conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        } else null
-    } catch (_: Throwable) {
+        val contentType = headers.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
+            ?: "application/json; charset=utf-8"
+        val response = UnmHttpClient.post(
+            url = urlStr,
+            body = body,
+            contentType = contentType,
+            headers = headers,
+            timeoutMs = timeoutMs.toLong()
+        )
+        response.bodyStringOrNull()
+    } catch (t: Throwable) {
+        UnmLogger.w("NativeSources", "httpPost error for $urlStr: ${t.message}", t)
         null
     }
 }
-
