@@ -728,7 +728,7 @@ class SongRightsTransformerAdversarialTest {
             val thread = Thread {
                 try {
                     for (i in 0 until iterationsPerThread) {
-                        val songId = (t * 1000 + i).toLong()
+                        val songId = (t * 1000 + i + 1).toLong()
                         val json = JSONObject().apply {
                             put("code", 200)
                             put("data", JSONObject().apply {
