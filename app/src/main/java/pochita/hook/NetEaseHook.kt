@@ -8,10 +8,11 @@ import pochita.codec.ProtocolCodec
 import pochita.common.UnmHttpClient
 import pochita.common.UnmLogger
 import pochita.common.UnmLruCache
+import pochita.config.ConfigManager
 import pochita.domain.transformer.SongRightsTransformer
 import pochita.model.SongInfo
 import pochita.resolver.PlayerUrlResolver
-import pochita.source.RuleManager
+import pochita.rule.RuleManager
 
 /**
  * NetEaseHook: Slim orchestrating facade for NetEase Cloud Music LSPosed hook.
@@ -48,8 +49,14 @@ object NetEaseHook {
     @Volatile
     private var playerUrlResolver: PlayerUrlResolver = PlayerUrlResolver(
         songCache = songCache,
-        audioMatcher = { song -> RuleManager.matchAudio(song) },
-        songDetailFetcher = { songId -> fetchSongInfoRemote(songId) }
+        audioMatcher = { song, config ->
+            RuleManager.matchAudio(song, priority = config.enabledSources)
+        },
+        songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
+        configProvider = { ConfigManager.getConfig() },
+        onTrackReplaced = { event ->
+            // Dispatched to ToastNotifier and PlayerUiHook (Milestone 2)
+        }
     )
 
     /**
@@ -74,12 +81,14 @@ object NetEaseHook {
             UnmLogger.w(TAG, "Failed to attach XposedAdapter to UnmLogger: ${t.message}")
         }
 
-        // 2. Initialize RuleManager (dynamic rules from RemotePreferences or embedded assets)
+        // 2. Initialize ConfigManager & RuleManager (dynamic rules from RemotePreferences or embedded assets)
         try {
             var customScript: String? = null
             try {
                 val prefs = module.getRemotePreferences("config")
+                ConfigManager.init(prefs)
                 customScript = prefs.getString("cached_rule_script", null)
+                UnmLogger.i(TAG, "ConfigManager attached to RemotePreferences")
             } catch (t: Throwable) {
                 UnmLogger.w(TAG, "RemotePreferences not available: ${t.message}")
             }
@@ -223,10 +232,12 @@ object NetEaseHook {
     fun resetForTesting() {
         songCache.clear()
         initialized.set(false)
+        ConfigManager.resetForTesting()
         playerUrlResolver = PlayerUrlResolver(
             songCache = songCache,
-            audioMatcher = { song -> RuleManager.matchAudio(song) },
-            songDetailFetcher = { songId -> fetchSongInfoRemote(songId) }
+            audioMatcher = { song, config -> RuleManager.matchAudio(song, priority = config.enabledSources) },
+            songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
+            configProvider = { ConfigManager.getConfig() }
         )
     }
 }

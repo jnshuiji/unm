@@ -165,6 +165,7 @@ object RuleManager {
     @Volatile
     private var appContext: Context? = null
 
+    fun getAppContext(): Context? = appContext
     fun isUsingDefault(): Boolean = isUsingDefaultRule
     fun getActiveScript(): String? = activeScript
     fun getConsecutiveErrorCount(): Int = consecutiveErrorCount.get()

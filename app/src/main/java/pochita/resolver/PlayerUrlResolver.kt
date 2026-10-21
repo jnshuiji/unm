@@ -5,7 +5,10 @@ import org.json.JSONTokener
 import pochita.common.UnmHttpClient
 import pochita.common.UnmLogger
 import pochita.common.UnmLruCache
+import pochita.config.ConfigManager
+import pochita.config.UnmConfig
 import pochita.model.MatchedAudio
+import pochita.model.ReplaceEvent
 import pochita.model.SongInfo
 
 /**
@@ -16,14 +19,49 @@ import pochita.model.SongInfo
  * - Preserves already valid, playable, non-trial audio without modifying or proxying it.
  * - Identifies restricted, unplayable, zero-bitrate, or trial audio tracks.
  * - Resolves metadata from [songCache] or fallback [songDetailFetcher].
- * - Queries [audioMatcher] to find replacement audio streams from alternative sources.
- * - Rewrites audio metadata (url, br, code, size, md5) and strips all trial restrictions.
+ * - Queries [audioMatcher] to find replacement audio streams from alternative sources based on [configProvider].
+ * - Rewrites audio metadata (url, br, code, size, md5) according to target quality preference and strips all trial restrictions.
+ * - Dispatches [ReplaceEvent] upon successful replacement to feedback listeners.
  */
 class PlayerUrlResolver(
     private val songCache: UnmLruCache<Long, SongInfo>,
-    private val audioMatcher: (SongInfo) -> MatchedAudio?,
-    private val songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) }
+    private val audioMatcher: (SongInfo, UnmConfig) -> MatchedAudio?,
+    private val songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) },
+    private val configProvider: () -> UnmConfig = { ConfigManager.getConfig() },
+    private val onTrackReplaced: ((ReplaceEvent) -> Unit)? = null
 ) {
+    /**
+     * Secondary constructor for backward compatibility with 3-argument callers.
+     */
+    constructor(
+        songCache: UnmLruCache<Long, SongInfo>,
+        audioMatcher: (SongInfo) -> MatchedAudio?,
+        songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) }
+    ) : this(
+        songCache = songCache,
+        audioMatcher = { song, _ -> audioMatcher(song) },
+        songDetailFetcher = songDetailFetcher,
+        configProvider = { ConfigManager.getConfig() },
+        onTrackReplaced = null
+    )
+
+    /**
+     * Secondary constructor allowing custom config provider and 1-argument audioMatcher.
+     */
+    constructor(
+        songCache: UnmLruCache<Long, SongInfo>,
+        audioMatcher: (SongInfo) -> MatchedAudio?,
+        songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) },
+        configProvider: () -> UnmConfig,
+        onTrackReplaced: ((ReplaceEvent) -> Unit)? = null
+    ) : this(
+        songCache = songCache,
+        audioMatcher = { song, _ -> audioMatcher(song) },
+        songDetailFetcher = songDetailFetcher,
+        configProvider = configProvider,
+        onTrackReplaced = onTrackReplaced
+    )
+
     companion object {
         private const val TAG = "PlayerUrlResolver"
 
@@ -83,6 +121,12 @@ class PlayerUrlResolver(
             return null
         }
 
+        val config = configProvider()
+        if (config.enabledSources.isEmpty()) {
+            UnmLogger.w(TAG, "All sound sources are disabled in configuration, skipping matching.")
+            return null
+        }
+
         return try {
             val root = JSONTokener(responseJson).nextValue()
             if (root !is JSONObject) return null
@@ -127,15 +171,28 @@ class PlayerUrlResolver(
                     continue
                 }
 
-                val matched = audioMatcher(songInfo)
+                val matched = audioMatcher(songInfo, config)
                 if (matched != null && matched.url.isNotBlank()) {
+                    val targetBr = config.targetBitrate()
+                    val actualBr = if (config.preferredQuality == "320k" && matched.br > 0) matched.br else targetBr
+                    val level = when {
+                        actualBr >= 900000 -> "lossless"
+                        actualBr >= 300000 -> "exhigh"
+                        actualBr >= 150000 -> "higher"
+                        else -> "standard"
+                    }
+                    val type = when {
+                        matched.url.contains(".flac", ignoreCase = true) || actualBr >= 900000 -> "flac"
+                        else -> "mp3"
+                    }
+
                     item.put("url", matched.url)
-                    item.put("br", if (matched.br > 0) matched.br else 320000)
+                    item.put("br", actualBr)
                     item.put("code", 200)
                     item.put("fee", 0)
                     item.put("payed", 1)
-                    item.put("level", "exhigh")
-                    item.put("type", "mp3")
+                    item.put("level", level)
+                    item.put("type", type)
                     if (matched.size > 0) item.put("size", matched.size)
                     if (matched.md5.isNotEmpty()) item.put("md5", matched.md5)
 
@@ -146,7 +203,20 @@ class PlayerUrlResolver(
                     item.put("trialMode", 0)
 
                     modified = true
-                    UnmLogger.i(TAG, "Replaced audio for song $songId (${songInfo.name} - ${songInfo.artist}) via ${matched.source}")
+                    UnmLogger.i(TAG, "Replaced audio for song $songId (${songInfo.name} - ${songInfo.artist}) via ${matched.source} at ${actualBr}bps ($level)")
+
+                    if (onTrackReplaced != null && (config.enableToast || config.enablePlayerBadge)) {
+                        val event = ReplaceEvent(
+                            songId = songId,
+                            originalTitle = songInfo.name,
+                            originalArtist = songInfo.artist,
+                            matchedSource = matched.source,
+                            matchedTitle = matched.matchedTitle.ifBlank { songInfo.name },
+                            matchedArtist = matched.matchedArtist.ifBlank { songInfo.artist },
+                            br = actualBr
+                        )
+                        onTrackReplaced.invoke(event)
+                    }
                 } else {
                     UnmLogger.w(TAG, "Audio matcher returned no result for song $songId (${songInfo.name})")
                 }
