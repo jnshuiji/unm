@@ -58,8 +58,8 @@ Decoupled multi-tier architecture isolating network hooks, protocol codecs, doma
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Core Infrastructure & Codec Layer | `UnmLogger`, `UnmLruCache`, `UnmHttpClient`, `GzipCodec`, `ProtocolCodec`, enhanced `EApiCrypto` | none | IN_PROGRESS |
-| M2 | Domain Transformer & Hook Layer Decoupling | `SongRightsTransformer`, `PlayerUrlResolver`, `CronetInterceptor`, `OkHttpInterceptor`, `HookUrlMatcher`, `NetEaseHook` Facade | M1 | PLANNED |
+| M1 | Core Infrastructure & Codec Layer | `UnmLogger`, `UnmLruCache`, `UnmHttpClient`, `GzipCodec`, `ProtocolCodec`, enhanced `EApiCrypto` | none | DONE |
+| M2 | Domain Transformer & Hook Layer Decoupling | `SongRightsTransformer`, `PlayerUrlResolver`, `CronetInterceptor`, `OkHttpInterceptor`, `HookUrlMatcher`, `NetEaseHook` Facade | M1 | IN_PROGRESS |
 | M3 | Engine Lifecycle & Sound Source Infrastructure | `AudioValidator`, `NativeSources` (OkHttp), `QuickJsEngine` optimization, `RuleManager` dry-run & atomic update | M1 | PLANNED |
 | M4 | Comprehensive Testing & Final Verification | Full E2E & 4-Tier test pass, `./gradlew test` (100% pass), `./gradlew assembleDebug` APK verification | M1, M2, M3 | PLANNED |
 
