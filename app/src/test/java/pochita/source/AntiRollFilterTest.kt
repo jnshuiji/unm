@@ -206,6 +206,28 @@ class AntiRollFilterTest {
             candidateDurationMs = 816_000L
         )
         assertTrue("Song with 'Deliverance' must not trigger Live penalty", deliverScore >= 150)
+
+        // "Django" contains "dj" as substring, but word boundary \b(dj)\b must NOT match
+        val djangoScore = AntiRollFilter.scoreCandidate(
+            originalTitle = "Django",
+            originalArtist = "Django Reinhardt",
+            originalDurationMs = 180_000L,
+            candidateTitle = "Django",
+            candidateArtist = "Django Reinhardt",
+            candidateDurationMs = 180_000L
+        )
+        assertTrue("Song with 'Django' in title must not be penalized as DJ Remix", djangoScore >= 150)
+
+        // "Adjust" contains "dj", must NOT match
+        val adjustScore = AntiRollFilter.scoreCandidate(
+            originalTitle = "Adjust",
+            originalArtist = "Artist",
+            originalDurationMs = 200_000L,
+            candidateTitle = "Adjust",
+            candidateArtist = "Artist",
+            candidateDurationMs = 200_000L
+        )
+        assertTrue("Song with 'Adjust' in title must not trigger DJ Remix penalty", adjustScore >= 150)
     }
 
     // =========================================================================

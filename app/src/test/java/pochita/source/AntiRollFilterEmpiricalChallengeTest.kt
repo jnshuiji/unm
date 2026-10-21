@@ -214,10 +214,21 @@ class AntiRollFilterEmpiricalChallengeTest {
         val isAdjustDj = AntiRollFilter.VersionCategory.DJ_REMIX.matches("Adjust")
         val isAdjectiveDj = AntiRollFilter.VersionCategory.DJ_REMIX.matches("Adjective")
 
-        println("EMPIRICAL CHECK - DJ_REMIX matches Django: $isDjangoDj, Adjust: $isAdjustDj, Adjective: $isAdjectiveDj")
+        // Standalone DJ and boundary tests
+        val isStandaloneDjUpper = AntiRollFilter.VersionCategory.DJ_REMIX.matches("夜曲 (DJ)")
+        val isStandaloneDjLower = AntiRollFilter.VersionCategory.DJ_REMIX.matches("Night Song dj")
+        val isDjRemixMix = AntiRollFilter.VersionCategory.DJ_REMIX.matches("DJ Snake")
 
-        // In DJ_REMIX, "DJ" is tested as a keyword. If it's a substring match without boundary, "Adjust" matches "dj"!
-        // Let's verify whether DJ_REMIX has word boundaries or substring behavior
+        // Verify that English words containing 'dj' substring do NOT trigger DJ_REMIX
+        assertFalse("Title 'Django' must NOT match DJ_REMIX category", isDjangoDj)
+        assertFalse("Title 'Adjust' must NOT match DJ_REMIX category", isAdjustDj)
+        assertFalse("Title 'Adjective' must NOT match DJ_REMIX category", isAdjectiveDj)
+
+        // Verify that true standalone DJ tokens DO match
+        assertTrue("Standalone 'DJ' must match DJ_REMIX", isStandaloneDjUpper)
+        assertTrue("Standalone 'dj' must match DJ_REMIX", isStandaloneDjLower)
+        assertTrue("Word boundary 'DJ Snake' must match DJ_REMIX", isDjRemixMix)
+
         val evalAdjust = AntiRollFilter.evaluateCandidate(
             originalTitle = "Adjust Your Eyes",
             originalArtist = "Artist",
@@ -248,12 +259,13 @@ class AntiRollFilterEmpiricalChallengeTest {
             enableAntiRoll = true
         )
 
-        // EMPIRICAL FINDING: Because "DJ" is placed in chineseKeywords without word boundary,
-        // any English word containing "dj" (e.g. "Adjust", "Django", "Adjective") matches DJ_REMIX!
-        assertTrue("Substrings containing 'dj' match DJ_REMIX due to lack of word boundary", isAdjustDj)
-        assertTrue("evalAdjust received DJ_REMIX bonus because of 'dj' substring", evalAdjust.matchedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
-        assertTrue("evalDiff penalized for DJ_REMIX because of 'dj' substring", evalDiff.penalizedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
-        assertTrue("Candidate with '(DJ版)' must be penalized for DJ_REMIX", evalDjValid.penalizedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
+        // Verifications post-fix:
+        assertFalse("evalAdjust must NOT receive DJ_REMIX bonus because of 'dj' substring",
+            evalAdjust.matchedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
+        assertFalse("evalDiff must NOT be penalized for DJ_REMIX because of 'dj' substring",
+            evalDiff.penalizedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
+        assertTrue("Candidate with '(DJ版)' must be penalized for DJ_REMIX",
+            evalDjValid.penalizedCategories.contains(AntiRollFilter.VersionCategory.DJ_REMIX))
     }
 
     // =========================================================================

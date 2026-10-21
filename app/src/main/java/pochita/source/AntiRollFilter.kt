@@ -65,9 +65,9 @@ object AntiRollFilter {
         DJ_REMIX(
             penalty = -220,
             matchBonus = 20,
-            chineseKeywords = listOf("DJ", "DJ版", "慢摇", "电音", "串烧", "嗨歌", "重低音"),
+            chineseKeywords = listOf("DJ版", "慢摇", "电音", "串烧", "嗨歌", "重低音"),
             latinPatterns = listOf(
-                Pattern.compile("\\b(remix|club mix|extended mix|mashup|bootleg|edm)\\b", Pattern.CASE_INSENSITIVE)
+                Pattern.compile("\\b(dj|remix|club mix|extended mix|mashup|bootleg|edm)\\b", Pattern.CASE_INSENSITIVE)
             )
         ),
         LIVE(
