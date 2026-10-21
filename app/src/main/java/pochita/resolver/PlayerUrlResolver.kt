@@ -7,6 +7,7 @@ import pochita.common.UnmLogger
 import pochita.common.UnmLruCache
 import pochita.config.ConfigManager
 import pochita.config.UnmConfig
+import pochita.event.ReplaceEventBus
 import pochita.model.MatchedAudio
 import pochita.model.ReplaceEvent
 import pochita.model.SongInfo
@@ -28,7 +29,7 @@ class PlayerUrlResolver(
     private val audioMatcher: (SongInfo, UnmConfig) -> MatchedAudio?,
     private val songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) },
     private val configProvider: () -> UnmConfig = { ConfigManager.getConfig() },
-    private val onTrackReplaced: ((ReplaceEvent) -> Unit)? = null
+    private val onTrackReplaced: ((ReplaceEvent) -> Unit)? = { ReplaceEventBus.publish(it) }
 ) {
     /**
      * Secondary constructor for backward compatibility with 3-argument callers.
@@ -42,7 +43,7 @@ class PlayerUrlResolver(
         audioMatcher = { song, _ -> audioMatcher(song) },
         songDetailFetcher = songDetailFetcher,
         configProvider = { ConfigManager.getConfig() },
-        onTrackReplaced = null
+        onTrackReplaced = { ReplaceEventBus.publish(it) }
     )
 
     /**

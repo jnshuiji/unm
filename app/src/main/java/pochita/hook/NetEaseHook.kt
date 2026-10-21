@@ -1,5 +1,6 @@
 package pochita.hook
 
+import android.app.Application
 import android.content.Context
 import io.github.libxposed.api.XposedModule
 import java.util.concurrent.atomic.AtomicBoolean
@@ -10,9 +11,11 @@ import pochita.common.UnmLogger
 import pochita.common.UnmLruCache
 import pochita.config.ConfigManager
 import pochita.domain.transformer.SongRightsTransformer
+import pochita.event.ReplaceEventBus
 import pochita.model.SongInfo
 import pochita.resolver.PlayerUrlResolver
 import pochita.rule.RuleManager
+import pochita.ui.ToastNotifier
 
 /**
  * NetEaseHook: Slim orchestrating facade for NetEase Cloud Music LSPosed hook.
@@ -55,7 +58,7 @@ object NetEaseHook {
         songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
         configProvider = { ConfigManager.getConfig() },
         onTrackReplaced = { event ->
-            // Dispatched to ToastNotifier and PlayerUiHook (Milestone 2)
+            ReplaceEventBus.publish(event)
         }
     )
 
@@ -116,6 +119,20 @@ object NetEaseHook {
             UnmLogger.i(TAG, "OkHttpInterceptor installed successfully")
         } catch (t: Throwable) {
             UnmLogger.e(TAG, "Failed to install OkHttpInterceptor", t)
+        }
+
+        // 5. Initialize UI notification and badge hooks
+        if (context != null) {
+            try {
+                ToastNotifier.init(context)
+                val app = context as? Application
+                if (app != null) {
+                    PlayerUiHook.install(app)
+                    UnmLogger.i(TAG, "PlayerUiHook installed successfully")
+                }
+            } catch (t: Throwable) {
+                UnmLogger.w(TAG, "Failed to initialize UI hooks: ${t.message}", t)
+            }
         }
     }
 
@@ -233,11 +250,17 @@ object NetEaseHook {
         songCache.clear()
         initialized.set(false)
         ConfigManager.resetForTesting()
+        ReplaceEventBus.resetForTesting()
+        ToastNotifier.resetForTesting()
+        PlayerUiHook.resetForTesting()
         playerUrlResolver = PlayerUrlResolver(
             songCache = songCache,
             audioMatcher = { song, config -> RuleManager.matchAudio(song, priority = config.enabledSources) },
             songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
-            configProvider = { ConfigManager.getConfig() }
+            configProvider = { ConfigManager.getConfig() },
+            onTrackReplaced = { event ->
+                ReplaceEventBus.publish(event)
+            }
         )
     }
 }
