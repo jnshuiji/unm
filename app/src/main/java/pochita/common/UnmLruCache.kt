@@ -126,18 +126,23 @@ class UnmLruCache<K : Any, V : Any>(
             computedValue = defaultValue()
         } catch (t: Throwable) {
             lock.withLock {
-                inFlight.remove(key)
+                if (inFlight[key]?.future === myFuture) {
+                    inFlight.remove(key)
+                }
             }
             myFuture!!.completeExceptionally(t)
             throw t
         }
 
         lock.withLock {
+            if (inFlight[key]?.future === myFuture) {
+                inFlight.remove(key)
+            }
             // Only insert into map if the cache was not cleared during computation
-            if (epoch == currentEpoch) {
+            // and no explicit put() inserted a newer value in the interim
+            if (epoch == currentEpoch && !map.containsKey(key)) {
                 map[key] = computedValue
             }
-            inFlight.remove(key)
         }
         myFuture!!.complete(computedValue)
 
