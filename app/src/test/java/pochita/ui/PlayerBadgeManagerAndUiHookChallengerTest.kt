@@ -162,9 +162,9 @@ class PlayerBadgeManagerAndUiHookChallengerTest {
     // =========================================================================
 
     /**
-     * EMPIRICAL FINDING 1: Substring containment in `titlesMatch` causes severe false positives
-     * when switching to completely different, unreplaced tracks whose names happen to contain
-     * the replaced song title as a substring.
+     * REMEDIATION VERIFICATION 1: Substring containment in `titlesMatch` has been removed.
+     * Exact normalized equality prevents false positives when switching to different tracks
+     * whose names share substrings.
      */
     @Test
     fun testTitlesMatchSubstringFalsePositiveChallenged() {
@@ -172,47 +172,46 @@ class PlayerBadgeManagerAndUiHookChallengerTest {
         // Song A was replaced: "你" (by Ariel Lin)
         // User switches to unreplaced Song B: "你的答案" (by A Rong)
         val matchA = PlayerUiHook.titlesMatch("你", "你的答案")
-        // Empirical proof: titlesMatch returns TRUE even though these are completely different songs!
-        assertTrue("EMPIRICAL PROOF: '你' matches '你的答案' due to substring containment", matchA)
+        assertFalse("REMEDIATED: '你' must NOT match '你的答案'", matchA)
 
         // Case B: Song A was replaced: "爱" (by Little Tigers)
         // User switches to unreplaced Song B: "爱情转移" (by Eason Chan)
         val matchB = PlayerUiHook.titlesMatch("爱", "爱情转移")
-        assertTrue("EMPIRICAL PROOF: '爱' matches '爱情转移' due to substring containment", matchB)
+        assertFalse("REMEDIATED: '爱' must NOT match '爱情转移'", matchB)
 
         // Case C: Distinct songs sharing a prefix
         // Song A was replaced: "晴天" (Jay Chou)
         // User switches to unreplaced Song B: "晴天娃娃" (Jiang Yuheng / Lara Veronin)
         val matchC = PlayerUiHook.titlesMatch("晴天", "晴天娃娃")
-        assertTrue("EMPIRICAL PROOF: '晴天' matches '晴天娃娃' due to substring containment", matchC)
+        assertFalse("REMEDIATED: '晴天' must NOT match '晴天娃娃'", matchC)
 
         // Case D: Distinct songs sharing a suffix
         // Song A was replaced: "红豆" (Faye Wong)
         // User switches to unreplaced Song B: "相思红豆" (Huang Siting)
         val matchD = PlayerUiHook.titlesMatch("红豆", "相思红豆")
-        assertTrue("EMPIRICAL PROOF: '红豆' matches '相思红豆' due to substring containment", matchD)
+        assertFalse("REMEDIATED: '红豆' must NOT match '相思红豆'", matchD)
 
         // Case E: English short song titles
         // Song A was replaced: "One" (U2)
         // User switches to unreplaced Song B: "One More Night" (Maroon 5)
         val matchE = PlayerUiHook.titlesMatch("One", "One More Night")
-        assertTrue("EMPIRICAL PROOF: 'One' matches 'One More Night' due to substring containment", matchE)
+        assertFalse("REMEDIATED: 'One' must NOT match 'One More Night'", matchE)
 
         // Case F: "Me" (Taylor Swift) vs "Tell Me Why" (Declan Galbraith)
         val matchF = PlayerUiHook.titlesMatch("Me", "Tell Me Why")
-        assertTrue("EMPIRICAL PROOF: 'Me' matches 'Tell Me Why' due to substring containment", matchF)
+        assertFalse("REMEDIATED: 'Me' must NOT match 'Tell Me Why'", matchF)
     }
 
     /**
-     * EMPIRICAL FINDING 2: When switching from a replaced track with suffix/tag
+     * REMEDIATION VERIFICATION 2: When switching from a replaced track with suffix/tag
      * (e.g. "晴天 (Live)") to the native, unreplaced studio version ("晴天"),
-     * `cleanA.contains(cleanB)` causes titlesMatch to return true.
+     * titlesMatch returns false to prevent badge bleed.
      */
     @Test
     fun testTitlesMatchReplacedLiveToUnreplacedStudioFalsePositive() {
         // When replaced track was "晴天 (Live)" and user switches to unreplaced "晴天"
         val match = PlayerUiHook.titlesMatch("晴天 (Live)", "晴天")
-        assertTrue("EMPIRICAL PROOF: '晴天 (Live)' matches '晴天' via cleanA.contains(cleanB)", match)
+        assertFalse("REMEDIATED: '晴天 (Live)' must NOT match '晴天'", match)
     }
 
     /**
@@ -246,7 +245,7 @@ class PlayerBadgeManagerAndUiHookChallengerTest {
     }
 
     @Test
-    fun testTrackSwitchingToSubstringUnreplacedSongFailsToClearBadgeLogic() {
+    fun testTrackSwitchingToSubstringUnreplacedSongClearsBadgeLogic() {
         // Simulate: Replaced track is "晴天"
         val event = createEvent(originalTitle = "晴天")
         PlayerUiHook.onTrackReplaced(event)
@@ -255,9 +254,8 @@ class PlayerBadgeManagerAndUiHookChallengerTest {
         val newTitle = "晴天娃娃"
         val matches = PlayerUiHook.titlesMatch(PlayerUiHook.latestEvent!!.originalTitle, newTitle)
 
-        // BUG DEMONSTRATION: titlesMatch returns true, so afterTextChanged executes:
-        // updateBadge(activity, current) instead of resetBadge(activity)!
-        assertTrue("DEMONSTRATES BUG: unreplaced song '晴天娃娃' erroneously matches replaced event '晴天'", matches)
+        // REMEDIATED: titlesMatch returns false, so afterTextChanged executes resetBadge(activity)
+        assertFalse("REMEDIATED: unreplaced song '晴天娃娃' does NOT match replaced event '晴天'", matches)
     }
 
     @Test
@@ -294,25 +292,28 @@ class PlayerBadgeManagerAndUiHookChallengerTest {
     }
 
     /**
-     * EMPIRICAL FINDING 3: PlayerUiHook does NOT subscribe to ConfigManager.addOnConfigChangeListener.
-     * When enablePlayerBadge is toggled at runtime, currently open PlayerActivity badge is NOT
-     * immediately reset until a subsequent lifecycle or event dispatch occurs.
+     * REMEDIATION VERIFICATION 3: PlayerUiHook subscribes to ConfigManager.addOnConfigChangeListener.
+     * When enablePlayerBadge is toggled off at runtime, the active PlayerActivity badge is
+     * immediately reset.
      */
     @Test
-    fun testPlayerUiHookDoesNotSubscribeToConfigChangeDirectly() {
-        // Registering a listener on ConfigManager works for external observers
-        var configChangedNotified = false
-        val unregister = ConfigManager.addOnConfigChangeListener { cfg ->
-            if (!cfg.enablePlayerBadge) {
-                configChangedNotified = true
-            }
+    fun testPlayerUiHookSubscribesToConfigChangeAndResetsBadgeImmediately() {
+        var resetCalled = false
+        val testActivity = android.app.Activity()
+        PlayerUiHook.setCurrentActivityForTesting(testActivity)
+        PlayerUiHook.onResetBadgeForTesting = {
+            resetCalled = true
         }
 
-        // Using setConfigForTesting to simulate state
-        ConfigManager.setConfigForTesting(UnmConfig(enablePlayerBadge = false))
-        assertFalse(ConfigManager.getConfig().enablePlayerBadge)
+        val fakePrefs = pochita.config.FakeSharedPreferences()
+        ConfigManager.init(fakePrefs)
+        PlayerUiHook.ensureConfigSubscription()
 
-        unregister()
+        fakePrefs.edit()
+            .putBoolean(pochita.data.PreferenceKeys.KEY_ENABLE_PLAYER_BADGE, false)
+            .apply()
+
+        assertTrue("resetBadge must be invoked on active PlayerActivity when badge is disabled via ConfigManager", resetCalled)
     }
 
     // =========================================================================

@@ -13,6 +13,7 @@ import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 import pochita.common.UnmLogger
 import pochita.config.ConfigManager
+import pochita.config.UnmConfig
 import pochita.event.ReplaceEventBus
 import pochita.model.ReplaceEvent
 import pochita.ui.PlayerBadgeManager
@@ -42,6 +43,10 @@ object PlayerUiHook {
     private var songNameId = 0
     private val activeWatchers = WeakHashMap<Activity, TextWatcher>()
     private var isSubscribedToBus = false
+    private var isSubscribedToConfig = false
+    private var configListenerUnregister: (() -> Unit)? = null
+
+    private val TITLE_NORMALIZE_REGEX = "[\\p{Punct}\\p{P}\\p{S}\\s]+".toRegex()
 
     /**
      * Initializes hook using target ClassLoader (satisfies interface contract).
@@ -50,6 +55,7 @@ object PlayerUiHook {
         try {
             classLoader.loadClass(TARGET_ACTIVITY)
             ensureBusSubscription()
+            ensureConfigSubscription()
             UnmLogger.i(TAG, "PlayerUiHook initialized with classLoader")
         } catch (t: Throwable) {
             UnmLogger.w(TAG, "PlayerActivity not immediately found in classLoader: ${t.message}")
@@ -61,6 +67,7 @@ object PlayerUiHook {
      */
     fun install(app: Application) {
         ensureBusSubscription()
+        ensureConfigSubscription()
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                 if (activity.javaClass.name == TARGET_ACTIVITY) {
@@ -100,6 +107,61 @@ object PlayerUiHook {
         }
     }
 
+    fun ensureConfigSubscription() {
+        if (!isSubscribedToConfig) {
+            configListenerUnregister = ConfigManager.addOnConfigChangeListener { config ->
+                onConfigChanged(config)
+            }
+            isSubscribedToConfig = true
+            UnmLogger.i(TAG, "PlayerUiHook subscribed to ConfigManager")
+        }
+    }
+
+    fun unregisterConfigListener() {
+        configListenerUnregister?.invoke()
+        configListenerUnregister = null
+        isSubscribedToConfig = false
+    }
+
+    internal var onResetBadgeForTesting: ((Activity) -> Unit)? = null
+
+    private fun dispatchToMain(block: () -> Unit) {
+        try {
+            if (Looper.myLooper() != null && Looper.myLooper() == Looper.getMainLooper()) {
+                block()
+                return
+            }
+            if (!mainHandler.post(block)) {
+                block()
+            }
+        } catch (_: Throwable) {
+            block()
+        }
+    }
+
+    fun onConfigChanged(config: UnmConfig) {
+        val activity = currentActivityRef?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
+
+        if (!config.enablePlayerBadge) {
+            dispatchToMain {
+                val act = currentActivityRef?.get() ?: return@dispatchToMain
+                if (act.isFinishing || act.isDestroyed) return@dispatchToMain
+                resetBadge(act)
+            }
+        } else {
+            dispatchToMain {
+                val act = currentActivityRef?.get() ?: return@dispatchToMain
+                if (act.isFinishing || act.isDestroyed) return@dispatchToMain
+                val event = latestEvent
+                val currentTitle = getCurrentSongTitle(act)
+                if (event != null && currentTitle.isNotEmpty() && titlesMatch(event.originalTitle, currentTitle)) {
+                    updateBadge(act, event)
+                }
+            }
+        }
+    }
+
     /**
      * Handles replacement events published by [ReplaceEventBus].
      */
@@ -123,16 +185,20 @@ object PlayerUiHook {
      * Resets authorNameTag and hides badge for the given [activity].
      */
     fun resetBadge(activity: Activity) {
+        onResetBadgeForTesting?.invoke(activity)
         PlayerBadgeManager.resetBadge(activity)
     }
 
     fun onPlayerActivityCreated(activity: Activity) {
+        ensureBusSubscription()
+        ensureConfigSubscription()
         currentActivityRef = WeakReference(activity)
         resolveResourceIds(activity)
         attachSongNameWatcher(activity)
     }
 
     fun onPlayerActivityResumed(activity: Activity) {
+        ensureConfigSubscription()
         currentActivityRef = WeakReference(activity)
         resolveResourceIds(activity)
 
@@ -199,10 +265,12 @@ object PlayerUiHook {
     fun titlesMatch(a: String, b: String): Boolean {
         if (a.isBlank() || b.isBlank()) return false
         if (a.equals(b, ignoreCase = true)) return true
-        val cleanA = a.replace("\\s+".toRegex(), "").lowercase()
-        val cleanB = b.replace("\\s+".toRegex(), "").lowercase()
-        if (cleanA.isEmpty() || cleanB.isEmpty()) return false
-        return cleanA == cleanB || cleanA.contains(cleanB) || cleanB.contains(cleanA)
+        val cleanA = a.replace(TITLE_NORMALIZE_REGEX, "").lowercase()
+        val cleanB = b.replace(TITLE_NORMALIZE_REGEX, "").lowercase()
+        if (cleanA.isEmpty() && cleanB.isEmpty()) {
+            return a.trim().equals(b.trim(), ignoreCase = true)
+        }
+        return cleanA.isNotEmpty() && cleanA == cleanB
     }
 
     private fun resolveResourceIds(context: Context) {
@@ -215,10 +283,16 @@ object PlayerUiHook {
      * Testing seam: Resets static state between unit tests.
      */
     fun resetForTesting() {
+        unregisterConfigListener()
         currentActivityRef = null
         latestEvent = null
         songNameId = 0
         activeWatchers.clear()
         isSubscribedToBus = false
+        onResetBadgeForTesting = null
+    }
+
+    fun setCurrentActivityForTesting(activity: Activity?) {
+        currentActivityRef = activity?.let { WeakReference(it) }
     }
 }

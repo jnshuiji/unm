@@ -62,9 +62,20 @@ class PlayerUiHookTest {
     }
 
     @Test
-    fun testTitlesMatchSubstringContainment() {
-        assertTrue(PlayerUiHook.titlesMatch("晴天", "晴天 (Live)"))
-        assertTrue(PlayerUiHook.titlesMatch("晴天 (Live)", "晴天"))
+    fun testTitlesMatchSubstringOverlapReturnsFalse() {
+        assertFalse(PlayerUiHook.titlesMatch("晴天", "晴天 (Live)"))
+        assertFalse(PlayerUiHook.titlesMatch("晴天 (Live)", "晴天"))
+        assertFalse(PlayerUiHook.titlesMatch("你", "你的答案"))
+        assertFalse(PlayerUiHook.titlesMatch("晴天", "晴天娃娃"))
+        assertFalse(PlayerUiHook.titlesMatch("红豆", "相思红豆"))
+    }
+
+    @Test
+    fun testTitlesMatchPunctuationAndBracketsNormalization() {
+        assertTrue(PlayerUiHook.titlesMatch("《晴天》", "晴天"))
+        assertTrue(PlayerUiHook.titlesMatch("[晴天]", "晴天"))
+        assertTrue(PlayerUiHook.titlesMatch("Hello, World!", "Hello World"))
+        assertTrue(PlayerUiHook.titlesMatch("It's My Life", "Its My Life"))
     }
 
     @Test
@@ -117,5 +128,39 @@ class PlayerUiHookTest {
         ReplaceEventBus.publish(event)
 
         assertEquals("发如雪", PlayerUiHook.latestEvent?.originalTitle)
+    }
+
+    @Test
+    fun testOnConfigChangedResetsBadgeWhenDisabled() {
+        var resetInvoked = false
+        val activity = android.app.Activity()
+        PlayerUiHook.setCurrentActivityForTesting(activity)
+        PlayerUiHook.onResetBadgeForTesting = {
+            resetInvoked = true
+        }
+
+        PlayerUiHook.onConfigChanged(UnmConfig(enablePlayerBadge = false))
+
+        assertTrue("resetBadge must be invoked when enablePlayerBadge is false", resetInvoked)
+    }
+
+    @Test
+    fun testEnsureConfigSubscriptionRegistersAndHandlesChanges() {
+        var resetInvoked = false
+        val activity = android.app.Activity()
+        PlayerUiHook.setCurrentActivityForTesting(activity)
+        PlayerUiHook.onResetBadgeForTesting = {
+            resetInvoked = true
+        }
+
+        val fakePrefs = pochita.config.FakeSharedPreferences()
+        ConfigManager.init(fakePrefs)
+        PlayerUiHook.ensureConfigSubscription()
+
+        fakePrefs.edit()
+            .putBoolean(pochita.data.PreferenceKeys.KEY_ENABLE_PLAYER_BADGE, false)
+            .apply()
+
+        assertTrue("ConfigManager change notification must trigger badge reset on active activity", resetInvoked)
     }
 }
