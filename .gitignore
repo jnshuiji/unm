@@ -11,3 +11,4 @@ captures/
 /tmp/
 tmp/
 *.apk
+.agents/
