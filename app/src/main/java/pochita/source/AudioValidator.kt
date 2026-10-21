@@ -43,6 +43,8 @@ object AudioValidator {
         "preview",
         "demo",
         "ringtone",
+        "ring-tone",
+        "ring tone",
         "clip",
         "sample"
     )

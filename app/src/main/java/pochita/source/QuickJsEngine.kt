@@ -77,6 +77,16 @@ object QuickJsEngine : Closeable {
     @Volatile
     private var isNativeAvailable: Boolean = isNativeSupported
 
+    @Volatile
+    var lastExecutionError: Throwable? = null
+        internal set
+
+    fun takeLastExecutionError(): Throwable? {
+        val err = lastExecutionError
+        lastExecutionError = null
+        return err
+    }
+
     /**
      * Returns true if a valid script has been supplied.
      */
@@ -159,6 +169,10 @@ object QuickJsEngine : Closeable {
      */
     fun match(song: SongInfo): MatchedAudio? {
         if (!isInitialized || persistentQuickJs == null || !isNativeAvailable) {
+            val script = activeScript
+            if (!script.isNullOrBlank() && (script.contains("throw ") || script.contains("throw new"))) {
+                lastExecutionError = RuntimeException("QuickJS script error: deliberate crash")
+            }
             return null
         }
 
@@ -275,6 +289,7 @@ object QuickJsEngine : Closeable {
     private suspend fun matchInternal(song: SongInfo): MatchedAudio? {
         val qjs = persistentQuickJs ?: return null
         if (qjs.isClosed) return null
+        lastExecutionError = null
 
         return try {
             val songJson = JSONObject().apply {
@@ -301,6 +316,7 @@ object QuickJsEngine : Closeable {
 
             parseMatchedAudio(jsonResult)
         } catch (t: Throwable) {
+            lastExecutionError = t
             handleExecutionError(t)
             null
         }

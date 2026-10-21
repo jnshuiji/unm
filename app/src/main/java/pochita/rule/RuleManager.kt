@@ -398,21 +398,23 @@ object RuleManager {
 
         // 2. QuickJS dynamic rule resolution with crash tracking & automatic rollback
         if (QuickJsEngine.hasScript()) {
-            try {
-                val jsResult = QuickJsEngine.match(song)
-                if (jsResult != null && jsResult.url.isNotEmpty() && AudioValidator.isValidAudioUrl(jsResult.url)) {
-                    consecutiveErrorCount.set(0)
-                    UnmLogger.i(TAG, "Matched via QuickJS rule [${jsResult.source}]: ${jsResult.url}")
-                    return jsResult
-                }
-                consecutiveErrorCount.set(0)
+            val jsResult = try {
+                QuickJsEngine.match(song)
             } catch (t: Throwable) {
+                null
+            }
+            val execError = QuickJsEngine.takeLastExecutionError()
+            if (execError != null) {
                 val count = consecutiveErrorCount.incrementAndGet()
-                UnmLogger.w(TAG, "QuickJS execution error ($count/$MAX_CONSECUTIVE_ERRORS): ${t.message}", t)
+                UnmLogger.w(TAG, "QuickJS execution error ($count/$MAX_CONSECUTIVE_ERRORS): ${execError.message}", execError)
                 if (count >= MAX_CONSECUTIVE_ERRORS) {
                     UnmLogger.e(TAG, "QuickJS rule exceeded maximum error threshold ($count). Triggering automatic rollback.")
                     rollbackToDefault(appContext)
                 }
+            } else if (jsResult != null && jsResult.url.isNotEmpty() && AudioValidator.isValidAudioUrl(jsResult.url)) {
+                consecutiveErrorCount.set(0)
+                UnmLogger.i(TAG, "Matched via QuickJS rule [${jsResult.source}]: ${jsResult.url}")
+                return jsResult
             }
         }
 
@@ -432,10 +434,11 @@ object RuleManager {
         }
 
         val lower = script.trim().lowercase()
-        if (lower.startsWith("<!doctype html") ||
-            lower.startsWith("<html") ||
-            lower.contains("<head>") ||
-            lower.contains("<body>")
+        if (lower.startsWith("<") ||
+            lower.contains("<html") ||
+            lower.contains("<script") ||
+            lower.contains("<head") ||
+            lower.contains("<body")
         ) {
             return Result.failure(IllegalArgumentException("下载内容为 HTML 网页而非 JavaScript 规则脚本"))
         }
@@ -602,7 +605,9 @@ object RuleManager {
         return Result.success(Unit)
     }
 
-    internal fun writeAtomic(targetFile: File, content: String): Result<Unit> {
+    private val fileWriteLock = Any()
+
+    internal fun writeAtomic(targetFile: File, content: String): Result<Unit> = synchronized(fileWriteLock) {
         val parentDir = targetFile.parentFile ?: return Result.failure(
             IOException("Target file has no parent directory: ${targetFile.path}")
         )
@@ -611,7 +616,7 @@ object RuleManager {
         }
 
         val tempFile = File(parentDir, "${targetFile.name}.tmp")
-        return try {
+        try {
             tempFile.outputStream().use { fos ->
                 fos.write(content.toByteArray(Charsets.UTF_8))
                 fos.flush()
