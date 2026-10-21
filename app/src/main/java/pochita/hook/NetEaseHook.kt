@@ -53,7 +53,7 @@ object NetEaseHook {
     private var playerUrlResolver: PlayerUrlResolver = PlayerUrlResolver(
         songCache = songCache,
         audioMatcher = { song, config ->
-            RuleManager.matchAudio(song, priority = config.enabledSources)
+            RuleManager.matchAudio(song, priority = config.enabledSources, config = config)
         },
         songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
         configProvider = { ConfigManager.getConfig() },
@@ -255,7 +255,7 @@ object NetEaseHook {
         PlayerUiHook.resetForTesting()
         playerUrlResolver = PlayerUrlResolver(
             songCache = songCache,
-            audioMatcher = { song, config -> RuleManager.matchAudio(song, priority = config.enabledSources) },
+            audioMatcher = { song, config -> RuleManager.matchAudio(song, priority = config.enabledSources, config = config) },
             songDetailFetcher = { songId -> fetchSongInfoRemote(songId) },
             configProvider = { ConfigManager.getConfig() },
             onTrackReplaced = { event ->

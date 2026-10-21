@@ -211,10 +211,7 @@ class PlayerUrlResolver(
                             songId = songId,
                             originalTitle = songInfo.name,
                             originalArtist = songInfo.artist,
-                            matchedSource = matched.source,
-                            matchedTitle = matched.matchedTitle.ifBlank { songInfo.name },
-                            matchedArtist = matched.matchedArtist.ifBlank { songInfo.artist },
-                            br = actualBr
+                            matchedAudio = matched.copy(br = actualBr)
                         )
                         onTrackReplaced.invoke(event)
                     }

@@ -9,8 +9,11 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicInteger
 import pochita.common.UnmHttpClient
 import pochita.common.UnmLogger
+import pochita.config.ConfigManager
+import pochita.config.UnmConfig
 import pochita.model.MatchedAudio
 import pochita.model.SongInfo
+import pochita.source.AntiRollFilter
 import pochita.source.AudioValidator
 import pochita.source.BodianSource
 import pochita.source.KugouSource
@@ -111,7 +114,14 @@ object RuleManager {
         if (playRes) {
             var playJson = JSON.parse(playRes);
             if (playJson.code === 200 && playJson.data && playJson.data.audioUrl) {
-                return { url: playJson.data.audioUrl, br: 320000, source: 'bodian-js' };
+                return {
+                    url: playJson.data.audioUrl,
+                    br: 320000,
+                    source: 'bodian-js',
+                    matchedTitle: abslist[0].SONGNAME || abslist[0].name || '',
+                    matchedArtist: abslist[0].ARTIST || abslist[0].artist || '',
+                    duration: playJson.data.duration || abslist[0].DURATION || 0
+                };
             }
         }
         return null;
@@ -128,7 +138,14 @@ object RuleManager {
         var trackUrl = 'http://antiserver.kuwo.cn/anti.s?type=convert_url&format=mp3&response=url&rid=MUSIC_' + rid;
         var trackRes = nativeBridge.httpGet(trackUrl, 'okhttp/3.10.0');
         if (trackRes && isValidAudio(trackRes)) {
-            return { url: trackRes, br: 320000, source: 'kuwo-js' };
+            return {
+                url: trackRes,
+                br: 320000,
+                source: 'kuwo-js',
+                matchedTitle: abslist[0].SONGNAME || abslist[0].name || '',
+                matchedArtist: abslist[0].ARTIST || abslist[0].artist || '',
+                duration: abslist[0].DURATION || 0
+            };
         }
         return null;
     }
@@ -150,7 +167,14 @@ object RuleManager {
         if (trackRes) {
             var trackJson = JSON.parse(trackRes);
             if (trackJson.url && trackJson.url.length > 0) {
-                return { url: trackJson.url[0], br: 320000, source: 'kugou-js' };
+                return {
+                    url: trackJson.url[0],
+                    br: 320000,
+                    source: 'kugou-js',
+                    matchedTitle: song.songname || (song.filename ? song.filename.split(' - ')[1] : '') || '',
+                    matchedArtist: song.singername || (song.filename ? song.filename.split(' - ')[0] : '') || '',
+                    duration: song.duration || 0
+                };
             }
         }
         return null;
@@ -367,34 +391,45 @@ object RuleManager {
 
     fun matchAudio(
         song: SongInfo,
-        priority: List<String> = listOf("bodian", "kuwo", "migu", "kugou")
+        priority: List<String> = listOf("bodian", "kuwo", "migu", "kugou"),
+        config: UnmConfig = ConfigManager.getConfig()
     ): MatchedAudio? {
         if (AudioValidator.isBlacklistedAudioId(song.id)) {
             UnmLogger.w(TAG, "Song ID ${song.id} is blacklisted by AudioValidator, skipping matching.")
             return null
         }
 
-        UnmLogger.i(TAG, "Matching audio for: ${song.name} - ${song.artist} (id=${song.id})")
+        UnmLogger.i(TAG, "Matching audio for: ${song.name} - ${song.artist} (id=${song.id}, enableAntiRoll=${config.enableAntiRoll})")
 
-        // 1. Native sound source resolution
-        for (sourceName in priority) {
-            val source = when (sourceName) {
-                "bodian" -> BodianSource
-                "kuwo" -> KuwoSource
-                "migu" -> MiguSource
-                "kugou" -> KugouSource
-                else -> null
-            } ?: continue
+        fun queryNativeSources(minScore: Int): MatchedAudio? {
+            for (sourceName in priority) {
+                val source = when (sourceName) {
+                    "bodian" -> BodianSource
+                    "kuwo" -> KuwoSource
+                    "migu" -> MiguSource
+                    "kugou" -> KugouSource
+                    else -> null
+                } ?: continue
 
-            try {
-                val result = source.match(song)
-                if (result != null && result.url.isNotEmpty() && AudioValidator.isValidAudioUrl(result.url)) {
-                    UnmLogger.i(TAG, "Matched via Native engine [${source.name}]: ${result.url}")
-                    return result
+                try {
+                    val result = source.match(song, minScore = minScore)
+                    if (result != null && result.url.isNotEmpty() && AudioValidator.isValidAudioUrl(result.url)) {
+                        UnmLogger.i(TAG, "Matched via Native engine [${source.name}] (minScore=$minScore): ${result.url}")
+                        return result
+                    }
+                } catch (t: Throwable) {
+                    UnmLogger.w(TAG, "Native source ${source.name} failed: ${t.message}", t)
                 }
-            } catch (t: Throwable) {
-                UnmLogger.w(TAG, "Native source ${source.name} failed: ${t.message}", t)
             }
+            return null
+        }
+
+        // -------------------------------------------------------------
+        // PASS 1: Clean Studio Pass (minScore >= THRESHOLD_CLEAN: 0)
+        // -------------------------------------------------------------
+        val cleanResult = queryNativeSources(minScore = AntiRollFilter.THRESHOLD_CLEAN)
+        if (cleanResult != null) {
+            return cleanResult
         }
 
         // 2. QuickJS dynamic rule resolution with crash tracking & automatic rollback
@@ -416,6 +451,19 @@ object RuleManager {
                 consecutiveErrorCount.set(0)
                 UnmLogger.i(TAG, "Matched via QuickJS rule [${jsResult.source}]: ${jsResult.url}")
                 return jsResult
+            }
+        }
+
+        // -------------------------------------------------------------
+        // PASS 2: Fallback Pass (minScore >= THRESHOLD_FALLBACK: -150)
+        // Only run if anti-roll was enabled (otherwise Pass 1 already accepted without penalty)
+        // -------------------------------------------------------------
+        if (config.enableAntiRoll) {
+            UnmLogger.i(TAG, "Pass 1 studio search yielded no results for '${song.name}'. Executing Pass 2 fallback (minScore=${AntiRollFilter.THRESHOLD_FALLBACK})...")
+            val fallbackResult = queryNativeSources(minScore = AntiRollFilter.THRESHOLD_FALLBACK)
+            if (fallbackResult != null) {
+                UnmLogger.w(TAG, "Using fallback candidate (Live/Cover) for ${song.name}: ${fallbackResult.matchedTitle} from ${fallbackResult.source}")
+                return fallbackResult
             }
         }
 

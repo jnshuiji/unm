@@ -98,7 +98,10 @@ function matchBodian(keyword, duration) {
             return {
                 url: playJson.data.audioUrl,
                 br: 320000,
-                source: 'bodian-js'
+                source: 'bodian-js',
+                matchedTitle: abslist[0].SONGNAME || abslist[0].name || '',
+                matchedArtist: abslist[0].ARTIST || abslist[0].artist || '',
+                duration: playJson.data.duration || abslist[0].DURATION || 0
             };
         }
     }
@@ -122,7 +125,10 @@ function matchKuwo(keyword, duration) {
         return {
             url: trackRes,
             br: 320000,
-            source: 'kuwo-js'
+            source: 'kuwo-js',
+            matchedTitle: abslist[0].SONGNAME || abslist[0].name || '',
+            matchedArtist: abslist[0].ARTIST || abslist[0].artist || '',
+            duration: abslist[0].DURATION || 0
         };
     }
     return null;
@@ -152,7 +158,10 @@ function matchKugou(keyword, duration) {
             return {
                 url: trackJson.url[0],
                 br: 320000,
-                source: 'kugou-js'
+                source: 'kugou-js',
+                matchedTitle: song.songname || (song.filename ? song.filename.split(' - ')[1] : '') || '',
+                matchedArtist: song.singername || (song.filename ? song.filename.split(' - ')[0] : '') || '',
+                duration: song.duration || 0
             };
         }
     }

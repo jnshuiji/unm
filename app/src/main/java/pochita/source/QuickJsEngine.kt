@@ -353,12 +353,30 @@ object QuickJsEngine : Closeable {
             val url = obj.optString("url")
             if (!AudioValidator.isValidAudioUrl(url)) return null
 
+            val matchedTitle = obj.optString("matchedTitle").ifEmpty {
+                obj.optString("title").ifEmpty { obj.optString("songName", "") }
+            }
+            val matchedArtist = obj.optString("matchedArtist").ifEmpty {
+                obj.optString("artist").ifEmpty { obj.optString("singerName", "") }
+            }
+            val durationMs = when {
+                obj.has("durationMs") -> obj.optLong("durationMs", 0L)
+                obj.has("duration") -> {
+                    val d = obj.optLong("duration", 0L)
+                    if (d in 1..3600) d * 1000L else d
+                }
+                else -> 0L
+            }
+
             MatchedAudio(
                 url = url,
                 br = obj.optInt("br", 320000),
                 size = obj.optLong("size", 0L),
                 md5 = obj.optString("md5", ""),
-                source = obj.optString("source", "unm-js")
+                source = obj.optString("source", "unm-js"),
+                matchedTitle = matchedTitle.takeIf { it.isNotEmpty() },
+                matchedArtist = matchedArtist.takeIf { it.isNotEmpty() },
+                durationMs = durationMs.takeIf { it > 0 }
             )
         } catch (t: Throwable) {
             UnmLogger.w(TAG, "Failed to parse matched audio JSON: $jsonResult", t)
