@@ -1,0 +1,161 @@
+package pochita.resolver
+
+import org.json.JSONObject
+import org.json.JSONTokener
+import pochita.common.UnmHttpClient
+import pochita.common.UnmLogger
+import pochita.common.UnmLruCache
+import pochita.model.MatchedAudio
+import pochita.model.SongInfo
+
+/**
+ * Player URL interceptor and sound source resolver.
+ *
+ * Responsibilities:
+ * - Detects audio player URL endpoints (/player/url and /song/enhance/player/url).
+ * - Preserves already valid, playable, non-trial audio without modifying or proxying it.
+ * - Identifies restricted, unplayable, zero-bitrate, or trial audio tracks.
+ * - Resolves metadata from [songCache] or fallback [songDetailFetcher].
+ * - Queries [audioMatcher] to find replacement audio streams from alternative sources.
+ * - Rewrites audio metadata (url, br, code, size, md5) and strips all trial restrictions.
+ */
+class PlayerUrlResolver(
+    private val songCache: UnmLruCache<Long, SongInfo>,
+    private val audioMatcher: (SongInfo) -> MatchedAudio?,
+    private val songDetailFetcher: ((Long) -> SongInfo?)? = { fetchSongDetail(it) }
+) {
+    companion object {
+        private const val TAG = "PlayerUrlResolver"
+
+        /**
+         * Fallback detail fetcher using [UnmHttpClient].
+         */
+        fun fetchSongDetail(songId: Long): SongInfo? {
+            return try {
+                val url = "https://music.163.com/api/song/detail?ids=[$songId]"
+                val response = UnmHttpClient.get(url, timeoutMs = 5000)
+                if (!response.isSuccessful) {
+                    UnmLogger.w(TAG, "Song detail HTTP failure for $songId: code=${response.code}")
+                    return null
+                }
+                val json = JSONObject(response.bodyString)
+                val songs = json.optJSONArray("songs") ?: return null
+                if (songs.length() == 0) return null
+                val songObj = songs.getJSONObject(0)
+                val name = songObj.optString("name", "")
+                val duration = songObj.optLong("duration", songObj.optLong("dt", 0L))
+                val artists = songObj.optJSONArray("artists") ?: songObj.optJSONArray("ar")
+                val artistName = if (artists != null && artists.length() > 0) {
+                    val first = artists.optJSONObject(0)
+                    first?.optString("name", "")?.takeIf { it.isNotEmpty() }
+                        ?: artists.optString(0, "")
+                } else {
+                    songObj.optString("artist", "")
+                }
+                if (name.isEmpty()) return null
+                SongInfo(id = songId, name = name, artist = artistName, durationMs = duration)
+            } catch (t: Throwable) {
+                UnmLogger.w(TAG, "Exception fetching song detail for $songId: ${t.message}", t)
+                null
+            }
+        }
+    }
+
+    /**
+     * Determines whether [url] is a player audio resolution endpoint.
+     */
+    fun isPlayerUrl(url: String): Boolean {
+        val isTarget = url.contains("player/url")
+        val isStatic = url.contains(".jpg") || url.contains(".webp") ||
+                url.contains(".png") || url.contains(".gif")
+        return isTarget && !isStatic
+    }
+
+    /**
+     * Inspects and rewrites player URL response JSON.
+     *
+     * @param url The intercepted request URL.
+     * @param responseJson The decrypted/decompressed JSON string.
+     * @return The updated JSON string if any tracks were replaced, or null if unmodified.
+     */
+    fun processPlayerUrl(url: String, responseJson: String): String? {
+        if (!isPlayerUrl(url) || responseJson.isBlank()) {
+            return null
+        }
+
+        return try {
+            val root = JSONTokener(responseJson).nextValue()
+            if (root !is JSONObject) return null
+
+            val dataArray = root.optJSONArray("data") ?: return null
+            var modified = false
+
+            for (i in 0 until dataArray.length()) {
+                val item = dataArray.optJSONObject(i) ?: continue
+                val songId = item.optLong("id", 0L)
+                if (songId <= 0) continue
+
+                val currentUrl = item.optString("url", "")
+                val hasValidUrl = currentUrl.isNotBlank() && currentUrl != "null" &&
+                        (currentUrl.startsWith("http://") || currentUrl.startsWith("https://"))
+                val br = item.optInt("br", 0)
+                val code = item.optInt("code", 200)
+                val hasTrial = (item.has("freeTrialInfo") && !item.isNull("freeTrialInfo")) ||
+                        (item.has("trialMode") && item.optInt("trialMode", 0) != 0) ||
+                        (item.has("freeTrialPrivilege") && !item.isNull("freeTrialPrivilege")) ||
+                        (item.has("freeTimeTrialPrivilege") && !item.isNull("freeTimeTrialPrivilege"))
+
+                val needUnblock = !hasValidUrl || br <= 0 || code != 200 || hasTrial
+                if (!needUnblock) {
+                    // Valid playable track, strictly preserve without modification
+                    continue
+                }
+
+                UnmLogger.d(TAG, "Restricted track detected: id=$songId (hasValidUrl=$hasValidUrl, br=$br, code=$code, hasTrial=$hasTrial)")
+
+                // Resolve metadata: Cache first, fallback to fetcher
+                val songInfo = songCache.get(songId) ?: run {
+                    val fetched = songDetailFetcher?.invoke(songId)
+                    if (fetched != null) {
+                        songCache.put(songId, fetched)
+                    }
+                    fetched
+                }
+
+                if (songInfo == null) {
+                    UnmLogger.w(TAG, "Could not resolve SongInfo for restricted songId=$songId")
+                    continue
+                }
+
+                val matched = audioMatcher(songInfo)
+                if (matched != null && matched.url.isNotBlank()) {
+                    item.put("url", matched.url)
+                    item.put("br", if (matched.br > 0) matched.br else 320000)
+                    item.put("code", 200)
+                    item.put("fee", 0)
+                    item.put("payed", 1)
+                    item.put("level", "exhigh")
+                    item.put("type", "mp3")
+                    if (matched.size > 0) item.put("size", matched.size)
+                    if (matched.md5.isNotEmpty()) item.put("md5", matched.md5)
+
+                    item.remove("freeTrialInfo")
+                    item.remove("freeTrialPrivilege")
+                    item.remove("freeTimeTrialPrivilege")
+                    if (item.has("urlTrial")) item.remove("urlTrial")
+                    item.put("trialMode", 0)
+
+                    modified = true
+                    UnmLogger.i(TAG, "Replaced audio for song $songId (${songInfo.name} - ${songInfo.artist}) via ${matched.source}")
+                } else {
+                    UnmLogger.w(TAG, "Audio matcher returned no result for song $songId (${songInfo.name})")
+                }
+            }
+
+            if (modified) root.toString() else null
+        } catch (t: Throwable) {
+            UnmLogger.w(TAG, "Error in processPlayerUrl for $url: ${t.message}", t)
+            null
+        }
+    }
+}

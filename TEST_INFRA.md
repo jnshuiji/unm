@@ -47,3 +47,4 @@
 - Tier 2: ≥5 per feature (Boundary, corner, malformed, empty, negative cases)
 - Tier 3: Pairwise coverage of major cross-feature interactions
 - Tier 4: ≥5 realistic application-level scenarios
+
