@@ -163,4 +163,44 @@ class PlayerUiHookTest {
 
         assertTrue("ConfigManager change notification must trigger badge reset on active activity", resetInvoked)
     }
+
+    @Test
+    fun testIsCurrentPlayingSongMatchesActiveSong() {
+        PlayerUiHook.currentPlayingTitle = "晴天"
+
+        val matchingEvent = sampleEvent("晴天")
+        assertTrue(PlayerUiHook.isCurrentPlayingSong(matchingEvent))
+
+        val caseMatchingEvent = sampleEvent("晴 天")
+        assertTrue(PlayerUiHook.isCurrentPlayingSong(caseMatchingEvent))
+
+        val prefetchEvent = sampleEvent("爷爷泡的茶")
+        assertFalse("Prefetch event for different song must return false", PlayerUiHook.isCurrentPlayingSong(prefetchEvent))
+    }
+
+    @Test
+    fun testPrefetchSuppressionPreventsToastNotification() {
+        val recordedToasts = mutableListOf<String>()
+        pochita.ui.ToastNotifier.setToastShowerForTesting { _, text, _ ->
+            recordedToasts.add(text.toString())
+        }
+        val fakeContext = android.content.ContextWrapper(null)
+        pochita.ui.ToastNotifier.init(fakeContext)
+
+        // Set active song to "晴天"
+        PlayerUiHook.currentPlayingTitle = "晴天"
+        pochita.ui.ToastNotifier.currentSongFilter = { PlayerUiHook.isCurrentPlayingSong(it) }
+
+        // Prefetch upcoming playlist tracks: "爷爷泡的茶", "珊瑚海"
+        ReplaceEventBus.publish(sampleEvent("爷爷泡的茶"))
+        ReplaceEventBus.publish(sampleEvent("珊瑚海"))
+
+        // Background prefetches must NOT produce any toasts
+        assertEquals("Prefetched tracks must not trigger toasts", 0, recordedToasts.size)
+
+        // Now active song is replaced and published: "晴天"
+        ReplaceEventBus.publish(sampleEvent("晴天"))
+        assertEquals("Active song replacement must trigger toast", 1, recordedToasts.size)
+        assertTrue(recordedToasts[0].contains("晴天"))
+    }
 }

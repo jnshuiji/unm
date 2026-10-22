@@ -33,9 +33,11 @@ import java.util.Locale
  * High-performance, zero-XML programmatic UI manager for NetEase PlayerActivity badge & detail dialog.
  *
  * Responsibilities:
- * - Locates authorNameTag in PlayerActivity without host XML layout dependencies.
- * - Injects or styles a compact pill-shaped badge with theme-adaptive colors and native ripple feedback.
+ * - Multi-tier anchor resolution (authorsContainer -> authorName -> authorNameTag -> songName)
+ *   providing 100% layout compatibility across phones and tablets (e.g. Xiaomi Pad).
+ * - Injects or updates a compact pill-shaped badge with theme-adaptive colors and native ripple feedback.
  * - Displays a comprehensive, non-crashing AlertDialog with replacement details and clipboard copy action.
+ * - Displays official native badge [官方·原版] for tracks playing natively from NetEase without replacement.
  * - Restores original host view state cleanly on unreplaced songs, track changes, or activity destruction.
  */
 object PlayerBadgeManager {
@@ -44,7 +46,7 @@ object PlayerBadgeManager {
     private const val TAG_ORIGINAL_VISIBILITY = -1001
 
     /**
-     * Injects or updates the dynamic badge in [activity] for [event].
+     * Injects or updates the dynamic replacement badge in [activity] for [event].
      * Dispatches safely to the Android main thread.
      */
     fun updateBadge(activity: Activity, event: ReplaceEvent?) {
@@ -59,33 +61,61 @@ object PlayerBadgeManager {
                     return@runOnUiThread
                 }
 
-                // 2. Locate anchor authorNameTag view
-                val authorTagResId = activity.resources.getIdentifier("authorNameTag", "id", activity.packageName)
-                val authorTagView = if (authorTagResId != 0) activity.findViewById<View>(authorTagResId) else null
-                if (authorTagView == null) {
-                    UnmLogger.w(TAG, "authorNameTag view not found in PlayerActivity")
+                // 2. Locate or create badge view via multi-tier anchor resolution
+                val badgeView = getOrCreateBadgeView(activity) ?: run {
+                    UnmLogger.w(TAG, "Unable to obtain or inject badge view in PlayerActivity")
                     return@runOnUiThread
                 }
 
-                val parent = authorTagView.parent as? ViewGroup
-                val badgeView: TextView = getOrCreateBadgeView(activity, parent, authorTagView) ?: run {
-                    UnmLogger.w(TAG, "Unable to obtain or inject badge view")
-                    return@runOnUiThread
-                }
-
-                // 3. Apply badge text and styling
+                // 3. Apply replaced badge text and styling
                 val isDark = isDarkTheme(activity)
-                styleBadgeView(badgeView, isDark)
+                styleReplacedBadgeView(badgeView, isDark)
                 badgeView.text = BadgeFormatter.formatBadgeText(event)
                 badgeView.visibility = View.VISIBLE
 
-                // 4. Set click listener to display detail AlertDialog
+                // 4. Set click listener to display replacement detail AlertDialog
                 badgeView.setOnClickListener {
                     showDetailDialog(activity, event)
                 }
+                UnmLogger.i(TAG, "Updated replacement badge: text='${badgeView.text}' for songId=${event.songId}")
 
             } catch (t: Throwable) {
                 UnmLogger.w(TAG, "Failed to update player badge: ${t.message}", t)
+            }
+        }
+    }
+
+    /**
+     * Displays a native [官方·原版] badge for playable NetEase tracks that do not require replacement.
+     */
+    fun showNativeBadge(activity: Activity, title: String, artist: String) {
+        activity.runOnUiThread {
+            try {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+
+                val config = ConfigManager.getConfig()
+                if (!config.enablePlayerBadge) {
+                    resetBadge(activity)
+                    return@runOnUiThread
+                }
+
+                val badgeView = getOrCreateBadgeView(activity) ?: run {
+                    UnmLogger.w(TAG, "Unable to obtain or inject native badge view in PlayerActivity")
+                    return@runOnUiThread
+                }
+
+                val isDark = isDarkTheme(activity)
+                styleNativeBadgeView(badgeView, isDark)
+                badgeView.text = "[官方·原版]"
+                badgeView.visibility = View.VISIBLE
+
+                badgeView.setOnClickListener {
+                    showNativeDetailDialog(activity, title, artist)
+                }
+                UnmLogger.i(TAG, "Displayed native [官方·原版] badge for '$title' - '$artist'")
+
+            } catch (t: Throwable) {
+                UnmLogger.w(TAG, "Failed to show native badge: ${t.message}", t)
             }
         }
     }
@@ -98,13 +128,7 @@ object PlayerBadgeManager {
             try {
                 if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
 
-                val authorTagResId = activity.resources.getIdentifier("authorNameTag", "id", activity.packageName)
-                val authorTagView = if (authorTagResId != 0) activity.findViewById<View>(authorTagResId) else null
-
-                val parent = authorTagView?.parent as? ViewGroup
-                val injectedBadge = parent?.findViewWithTag<View>(TAG_UNM_BADGE)
-
-                // Hide and clean up injected badge
+                val injectedBadge = activity.window?.decorView?.findViewWithTag<View>(TAG_UNM_BADGE)
                 if (injectedBadge != null) {
                     injectedBadge.visibility = View.GONE
                     injectedBadge.setOnClickListener(null)
@@ -114,17 +138,11 @@ object PlayerBadgeManager {
                 }
 
                 // Restore host authorNameTag visibility if previously hidden
+                val authorTagView = findViewByStringId(activity, "authorNameTag")
                 if (authorTagView != null) {
                     val originalVis = authorTagView.getTag(TAG_ORIGINAL_VISIBILITY) as? Int
                     if (originalVis != null) {
                         authorTagView.visibility = originalVis
-                    } else if (injectedBadge == null && authorTagView is TextView) {
-                        // Direct decoration fallback cleanup
-                        authorTagView.text = ""
-                        authorTagView.background = null
-                        authorTagView.visibility = View.GONE
-                        authorTagView.setOnClickListener(null)
-                        authorTagView.isClickable = false
                     }
                 }
             } catch (t: Throwable) {
@@ -133,59 +151,157 @@ object PlayerBadgeManager {
         }
     }
 
+    private data class AnchorInfo(
+        val container: ViewGroup,
+        val insertIndex: Int,
+        val anchorView: View? = null
+    )
+
+    /**
+     * Robust view lookup by string resource name with recursive decorView fallback.
+     */
+    fun findViewByStringId(activity: Activity, idName: String): View? {
+        val resId = activity.resources.getIdentifier(idName, "id", activity.packageName)
+        if (resId != 0) {
+            val v = activity.findViewById<View>(resId)
+            if (v != null) return v
+        }
+        return findViewByEntryName(activity.window?.decorView, idName)
+    }
+
+    private fun findViewByEntryName(view: View?, targetName: String): View? {
+        if (view == null) return null
+        try {
+            if (view.id != View.NO_ID) {
+                val name = view.resources.getResourceEntryName(view.id)
+                if (name == targetName) return view
+            }
+        } catch (_: Throwable) {}
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val found = findViewByEntryName(view.getChildAt(i), targetName)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    /**
+     * Multi-tier resolution for anchor layout container:
+     * - Tier 1: authorsContainer (LinearLayout) immediately adjacent to authorName (Phone & Tablet)
+     * - Tier 2: authorName's parent ViewGroup
+     * - Tier 3: authorNameTag's parent ViewGroup
+     * - Tier 4: songName's parent ViewGroup
+     */
+    private fun findAnchor(activity: Activity): AnchorInfo? {
+        // Tier 1: authorsContainer LinearLayout
+        val authorsContainer = findViewByStringId(activity, "authorsContainer") as? ViewGroup
+        if (authorsContainer != null) {
+            val authorName = findViewByStringId(activity, "authorName")
+            val idx = if (authorName != null) authorsContainer.indexOfChild(authorName) else -1
+            val insertIdx = if (idx >= 0) idx + 1 else authorsContainer.childCount
+            UnmLogger.d(TAG, "Anchor Tier 1 matched: authorsContainer found, insertIdx=$insertIdx")
+            return AnchorInfo(authorsContainer, insertIdx, authorName)
+        }
+
+        // Tier 2: authorName parent
+        val authorName = findViewByStringId(activity, "authorName")
+        val parent2 = authorName?.parent as? ViewGroup
+        if (parent2 != null) {
+            val idx = parent2.indexOfChild(authorName)
+            val insertIdx = if (idx >= 0) idx + 1 else parent2.childCount
+            UnmLogger.d(TAG, "Anchor Tier 2 matched: authorName.parent found, insertIdx=$insertIdx")
+            return AnchorInfo(parent2, insertIdx, authorName)
+        }
+
+        // Tier 3: authorNameTag parent
+        val authorTag = findViewByStringId(activity, "authorNameTag")
+        val parent3 = authorTag?.parent as? ViewGroup
+        if (parent3 != null) {
+            val idx = parent3.indexOfChild(authorTag)
+            val insertIdx = if (idx >= 0) idx + 1 else parent3.childCount
+            UnmLogger.d(TAG, "Anchor Tier 3 matched: authorNameTag.parent found, insertIdx=$insertIdx")
+            return AnchorInfo(parent3, insertIdx, authorTag)
+        }
+
+        // Tier 4: songName parent
+        val songName = findViewByStringId(activity, "songName")
+        val parent4 = songName?.parent as? ViewGroup
+        if (parent4 != null) {
+            val idx = parent4.indexOfChild(songName)
+            val insertIdx = if (idx >= 0) idx + 1 else parent4.childCount
+            UnmLogger.d(TAG, "Anchor Tier 4 matched: songName.parent found, insertIdx=$insertIdx")
+            return AnchorInfo(parent4, insertIdx, songName)
+        }
+
+        UnmLogger.w(TAG, "No anchor view found in PlayerActivity view hierarchy")
+        return null
+    }
+
     /**
      * Resolves existing badge view or creates and injects a dedicated TextView.
      */
-    private fun getOrCreateBadgeView(activity: Activity, parent: ViewGroup?, anchorView: View): TextView? {
-        // Try finding existing injected view first
-        val existing = parent?.findViewWithTag<TextView>(TAG_UNM_BADGE)
+    private fun getOrCreateBadgeView(activity: Activity): TextView? {
+        val decorView = activity.window?.decorView
+        val existing = decorView?.findViewWithTag<TextView>(TAG_UNM_BADGE)
         if (existing != null) return existing
 
-        // Primary: inject dedicated view into parent container (e.g. artistFollowContainer FrameLayout)
-        if (parent != null) {
-            val badge = TextView(activity).apply {
-                tag = TAG_UNM_BADGE
-            }
+        val anchor = findAnchor(activity) ?: return null
+        val parent = anchor.container
 
-            if (parent is FrameLayout) {
-                val lp = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    gravity = Gravity.CENTER_VERTICAL
-                    leftMargin = dpToPx(activity, 4f).toInt()
-                }
-                parent.addView(badge, lp)
-            } else if (parent is LinearLayout) {
+        val badge = TextView(activity).apply {
+            tag = TAG_UNM_BADGE
+        }
+
+        when (parent) {
+            is LinearLayout -> {
                 val lp = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
                     gravity = Gravity.CENTER_VERTICAL
+                    leftMargin = dpToPx(activity, 8f).toInt()
+                }
+                val safeIndex = anchor.insertIndex.coerceIn(0, parent.childCount)
+                parent.addView(badge, safeIndex, lp)
+            }
+            is FrameLayout -> {
+                val lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_VERTICAL
                     leftMargin = dpToPx(activity, 6f).toInt()
                 }
-                val index = parent.indexOfChild(anchorView)
-                parent.addView(badge, if (index >= 0) index + 1 else parent.childCount, lp)
-            } else {
+                parent.addView(badge, lp)
+            }
+            else -> {
                 parent.addView(badge)
             }
-
-            // Hide original authorNameTag while dedicated badge is showing
-            if (anchorView.getTag(TAG_ORIGINAL_VISIBILITY) == null) {
-                anchorView.setTag(TAG_ORIGINAL_VISIBILITY, anchorView.visibility)
-            }
-            anchorView.visibility = View.GONE
-            return badge
         }
 
-        // Fallback: decorate anchorView directly if it is a TextView
-        return anchorView as? TextView
+        // Defensively disable clipping up the hierarchy so pill badge is never cut off
+        disableClippingRecursively(parent)
+        UnmLogger.i(TAG, "Injected badge view into container ${parent.javaClass.simpleName} at index ${anchor.insertIndex}")
+
+        return badge
+    }
+
+    private fun disableClippingRecursively(view: ViewGroup) {
+        var current: ViewGroup? = view
+        var depth = 0
+        while (current != null && depth < 4) {
+            current.clipChildren = false
+            current.clipToPadding = false
+            current = current.parent as? ViewGroup
+            depth++
+        }
     }
 
     /**
-     * Styles the badge view with compact bounds, rounded drawable, and native ripple.
+     * Styles the badge view for replaced tracks (NetEase Red / Accent theme).
      */
-    private fun styleBadgeView(view: TextView, isDark: Boolean) {
+    private fun styleReplacedBadgeView(view: TextView, isDark: Boolean) {
         val context = view.context
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
         view.typeface = Typeface.DEFAULT_BOLD
@@ -206,7 +322,6 @@ object PlayerBadgeManager {
 
         view.setTextColor(textColor)
 
-        // Background with corner radius
         val shape = GradientDrawable().apply {
             this.shape = GradientDrawable.RECTANGLE
             cornerRadius = dpToPx(context, 4f)
@@ -223,7 +338,46 @@ object PlayerBadgeManager {
     }
 
     /**
-     * Displays a styled, comprehensive replacement detail AlertDialog.
+     * Styles the badge view for native NetEase tracks (Subtle Slate Gray theme).
+     */
+    private fun styleNativeBadgeView(view: TextView, isDark: Boolean) {
+        val context = view.context
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+        view.typeface = Typeface.DEFAULT_BOLD
+        view.includeFontPadding = false
+        view.isSingleLine = true
+        view.ellipsize = TextUtils.TruncateAt.END
+        view.maxWidth = dpToPx(context, 180f).toInt()
+        view.gravity = Gravity.CENTER
+
+        val padH = dpToPx(context, 6f).toInt()
+        val padV = dpToPx(context, 2.5f).toInt()
+        view.setPadding(padH, padV, padH, padV)
+
+        // Palette: subtle gray / slate tone
+        val bgColor = if (isDark) Color.argb(35, 255, 255, 255) else Color.argb(18, 0, 0, 0)
+        val strokeColor = if (isDark) Color.argb(60, 255, 255, 255) else Color.argb(60, 100, 100, 100)
+        val textColor = if (isDark) Color.argb(200, 255, 255, 255) else Color.parseColor("#555555")
+
+        view.setTextColor(textColor)
+
+        val shape = GradientDrawable().apply {
+            this.shape = GradientDrawable.RECTANGLE
+            cornerRadius = dpToPx(context, 4f)
+            setColor(bgColor)
+            setStroke(dpToPx(context, 0.8f).toInt(), strokeColor)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val rippleColor = ColorStateList.valueOf(Color.argb(40, 255, 255, 255))
+            view.background = RippleDrawable(rippleColor, shape, null)
+        } else {
+            view.background = shape
+        }
+    }
+
+    /**
+     * Displays a styled replacement detail AlertDialog.
      */
     fun showDetailDialog(activity: Activity, event: ReplaceEvent) {
         if (activity.isFinishing || activity.isDestroyed) return
@@ -239,7 +393,6 @@ object PlayerBadgeManager {
             val builder = AlertDialog.Builder(activity, themeResId)
             builder.setTitle("🎵 云村换源详情")
 
-            // Programmatic layout container
             val pad = dpToPx(activity, 20f).toInt()
             val container = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -308,6 +461,74 @@ object PlayerBadgeManager {
             builder.show()
         } catch (t: Throwable) {
             UnmLogger.w(TAG, "Failed to show detail dialog: ${t.message}", t)
+        }
+    }
+
+    /**
+     * Displays an official native audio information AlertDialog.
+     */
+    fun showNativeDetailDialog(activity: Activity, title: String, artist: String) {
+        if (activity.isFinishing || activity.isDestroyed) return
+
+        try {
+            val isDark = isDarkTheme(activity)
+            val themeResId = if (isDark) {
+                android.R.style.Theme_DeviceDefault_Dialog_Alert
+            } else {
+                android.R.style.Theme_DeviceDefault_Light_Dialog_Alert
+            }
+
+            val builder = AlertDialog.Builder(activity, themeResId)
+            builder.setTitle("🎵 播放音源详情")
+
+            val pad = dpToPx(activity, 20f).toInt()
+            val container = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad / 2, pad, pad / 2)
+            }
+
+            val primaryTextColor = if (isDark) Color.WHITE else Color.parseColor("#222222")
+
+            fun addSection(header: String, lines: List<String>) {
+                val titleView = TextView(activity).apply {
+                    text = header
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#388E3C"))
+                    setPadding(0, dpToPx(activity, 8f).toInt(), 0, dpToPx(activity, 4f).toInt())
+                }
+                container.addView(titleView)
+
+                for (line in lines) {
+                    val lineView = TextView(activity).apply {
+                        text = line
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+                        setTextColor(primaryTextColor)
+                        setPadding(0, dpToPx(activity, 2f).toInt(), 0, dpToPx(activity, 2f).toInt())
+                    }
+                    container.addView(lineView)
+                }
+            }
+
+            addSection("当前歌曲", listOf(
+                "曲名: 《$title》",
+                "歌手: ${artist.ifBlank { "未知歌手" }}"
+            ))
+
+            addSection("音源状态", listOf(
+                "音频来源: 网易云官方原版",
+                "换源状态: 官方播放 (无需换源)",
+                "说明: 本歌曲在网易云音乐拥有完整的官方播放版权，音质正常，无需通过 UNM 换源替换，正在为您播放官方原生音频流。"
+            ))
+
+            val scrollView = ScrollView(activity).apply {
+                addView(container)
+            }
+            builder.setView(scrollView)
+            builder.setPositiveButton("我知道了", null)
+            builder.show()
+        } catch (t: Throwable) {
+            UnmLogger.w(TAG, "Failed to show native detail dialog: ${t.message}", t)
         }
     }
 

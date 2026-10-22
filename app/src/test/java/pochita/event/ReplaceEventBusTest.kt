@@ -193,4 +193,51 @@ class ReplaceEventBusTest {
         executor.shutdown()
         assertEquals(threadCount * eventsPerThread, receivedCount.get())
     }
+
+    @Test
+    fun testFindReplacementById() {
+        val event1 = sampleEvent(101L, "晴天")
+        val event2 = sampleEvent(102L, "七里香")
+
+        ReplaceEventBus.publish(event1)
+        ReplaceEventBus.publish(event2)
+
+        assertEquals(event1, ReplaceEventBus.findReplacementById(101L))
+        assertEquals(event2, ReplaceEventBus.findReplacementById(102L))
+        assertNull(ReplaceEventBus.findReplacementById(999L))
+    }
+
+    @Test
+    fun testFindReplacementByTitle() {
+        val event1 = sampleEvent(201L, "晴天")
+        val event2 = sampleEvent(202L, "Simple Love")
+
+        ReplaceEventBus.publish(event1)
+        ReplaceEventBus.publish(event2)
+
+        // Exact match
+        assertEquals(event1, ReplaceEventBus.findReplacementByTitle("晴天"))
+        // Case-insensitive & normalized match
+        assertEquals(event2, ReplaceEventBus.findReplacementByTitle("simple love"))
+        assertEquals(event2, ReplaceEventBus.findReplacementByTitle("Simple  Love"))
+        // Punctuation normalized match
+        assertEquals(event1, ReplaceEventBus.findReplacementByTitle("《晴天》"))
+
+        // Unrelated titles
+        assertNull(ReplaceEventBus.findReplacementByTitle("夜曲"))
+        assertNull(ReplaceEventBus.findReplacementByTitle(null))
+        assertNull(ReplaceEventBus.findReplacementByTitle(""))
+    }
+
+    @Test
+    fun testResetClearsCaches() {
+        ReplaceEventBus.publish(sampleEvent(301L, "枫"))
+        assertNotNull(ReplaceEventBus.findReplacementById(301L))
+        assertNotNull(ReplaceEventBus.findReplacementByTitle("枫"))
+
+        ReplaceEventBus.resetForTesting()
+
+        assertNull(ReplaceEventBus.findReplacementById(301L))
+        assertNull(ReplaceEventBus.findReplacementByTitle("枫"))
+    }
 }

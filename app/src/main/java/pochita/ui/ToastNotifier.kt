@@ -16,6 +16,7 @@ import java.util.Locale
  * Features:
  * - Checks [ConfigManager.getConfig().enableToast] toggle before displaying.
  * - 3-second (3000ms) anti-flood cooldown window preventing rapid successive toasts.
+ * - Supports [currentSongFilter] to prevent background prefetch songs from triggering ghost toasts.
  * - Formats message: "🎵 云村换源: 已替换为 [酷我]《具体曲名》· 320k".
  * - Dispatched to Android main thread via [Handler(Looper.getMainLooper())].
  * - Full test seam support for local JVM testing.
@@ -29,6 +30,13 @@ object ToastNotifier {
 
     @Volatile
     private var lastToastTimestamp: Long = 0L
+
+    /**
+     * Optional filter predicate for automatic event bus subscriptions.
+     * When set, only events for the actively playing song produce a Toast.
+     */
+    @Volatile
+    internal var currentSongFilter: ((ReplaceEvent) -> Boolean)? = null
 
     // Testing and execution seams
     internal var timeProvider: () -> Long = {
@@ -66,8 +74,13 @@ object ToastNotifier {
     fun init(context: Context) {
         this.appContext = context.applicationContext ?: context
         ReplaceEventBus.subscribe { event ->
-            this.appContext?.let { ctx ->
-                notify(ctx, event)
+            val filter = currentSongFilter
+            if (filter == null || filter(event)) {
+                this.appContext?.let { ctx ->
+                    notify(ctx, event)
+                }
+            } else {
+                UnmLogger.d(TAG, "Toast suppressed by currentSongFilter: songId=${event.songId}, title=${event.originalTitle}")
             }
         }
         UnmLogger.i(TAG, "ToastNotifier initialized and subscribed to ReplaceEventBus")
@@ -181,6 +194,7 @@ object ToastNotifier {
     fun resetForTesting() {
         lastToastTimestamp = 0L
         appContext = null
+        currentSongFilter = null
         timeProvider = {
             try {
                 android.os.SystemClock.uptimeMillis().takeIf { it > 0 } ?: System.currentTimeMillis()
