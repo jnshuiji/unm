@@ -145,14 +145,28 @@ class PlayerUrlResolver(
                         (currentUrl.startsWith("http://") || currentUrl.startsWith("https://"))
                 val br = item.optInt("br", 0)
                 val code = item.optInt("code", 200)
-                val hasTrial = (item.has("freeTrialInfo") && !item.isNull("freeTrialInfo")) ||
-                        (item.has("trialMode") && item.optInt("trialMode", 0) != 0) ||
-                        (item.has("freeTrialPrivilege") && !item.isNull("freeTrialPrivilege")) ||
-                        (item.has("freeTimeTrialPrivilege") && !item.isNull("freeTimeTrialPrivilege"))
+                val payed = item.optInt("payed", 0)
+
+                // Precise trial detection:
+                // - Explicit trial indicators: freeTrialInfo (e.g. 30s preview), trialMode != 0, urlTrial, positive remainTime
+                // - Privilege-based trial: freeTrialPrivilege is present when the user has NOT paid/subscribed (payed == 0).
+                //   If user has VIP (payed == 1) and no trial snippet, it is full official audio and must NOT be replaced.
+                val freeTrialInfo = item.optJSONObject("freeTrialInfo")
+                val hasFreeTrialInfo = freeTrialInfo != null && freeTrialInfo.length() > 0
+                val isTrialMode = item.optInt("trialMode", 0) != 0
+                val hasUrlTrial = item.has("urlTrial") && !item.isNull("urlTrial")
+                val freeTimeTrial = item.optJSONObject("freeTimeTrialPrivilege")
+                val hasTimeTrial = (freeTimeTrial?.optInt("remainTime", 0) ?: 0) > 0 ||
+                        (freeTimeTrial?.optInt("type", 0) ?: 0) != 0
+                val freeTrialPriv = item.optJSONObject("freeTrialPrivilege")
+                val cannotListen = freeTrialPriv?.optString("cannotListenReason", "")?.isNotBlank() == true
+                val hasTrialPrivilege = (freeTrialPriv != null || freeTimeTrial != null) && payed == 0
+
+                val hasTrial = hasFreeTrialInfo || isTrialMode || hasUrlTrial || hasTimeTrial || cannotListen || hasTrialPrivilege
 
                 val needUnblock = !hasValidUrl || br <= 0 || code != 200 || hasTrial
                 if (!needUnblock) {
-                    // Valid playable track, strictly preserve without modification
+                    // Valid playable track (e.g. VIP or free song with official audio), strictly preserve
                     continue
                 }
 
@@ -194,8 +208,13 @@ class PlayerUrlResolver(
                     item.put("payed", 1)
                     item.put("level", level)
                     item.put("type", type)
-                    if (matched.size > 0) item.put("size", matched.size)
-                    if (matched.md5.isNotEmpty()) item.put("md5", matched.md5)
+                    if (matched.size > 0) {
+                        item.put("size", matched.size)
+                    } else if (songInfo.durationMs > 0 && actualBr > 0) {
+                        val estimatedBytes = (songInfo.durationMs / 1000) * (actualBr / 8)
+                        item.put("size", estimatedBytes)
+                    }
+                    if (matched.md5.isNotEmpty()) item.put("md5", matched.md5) else item.remove("md5")
 
                     item.remove("freeTrialInfo")
                     item.remove("freeTrialPrivilege")

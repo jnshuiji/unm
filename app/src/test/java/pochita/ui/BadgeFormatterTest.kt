@@ -97,6 +97,19 @@ class BadgeFormatterTest {
     }
 
     @Test
+    fun testFormatPillBadgeTextAlwaysCompactNeverAppendsLongTitle() {
+        val longTitle = "Kiss Fight (feat. gnash) [Ben Phipps Remix]"
+        val event = sampleEvent(
+            originalTitle = "Kiss Fight",
+            matchedTitle = longTitle,
+            matchedSource = "bodian",
+            br = 320000
+        )
+        // formatPillBadgeText strictly returns compact "[波点·320K]" to prevent UI layout breakage
+        assertEquals("[波点·320K]", BadgeFormatter.formatPillBadgeText(event))
+    }
+
+    @Test
     fun testFormatClipboardText() {
         val event = sampleEvent(
             songId = 98765L,

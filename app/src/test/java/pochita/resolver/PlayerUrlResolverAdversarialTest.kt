@@ -361,6 +361,43 @@ class PlayerUrlResolverAdversarialTest {
         }
     }
 
+    @Test
+    fun testPlayableVipSongWithFreeTrialPrivilegeIsPreserved() {
+        val songId = 889900L
+        songCache.put(songId, SongInfo(songId, "戒不掉 (原声版)", "欧豪", 210000L))
+
+        var audioMatcherCalled = false
+        val resolver = PlayerUrlResolver(
+            songCache = songCache,
+            audioMatcher = {
+                audioMatcherCalled = true
+                MatchedAudio("https://unm.replaced/$songId.mp3", br = 320000)
+            },
+            songDetailFetcher = null
+        )
+
+        val rootJson = JSONObject()
+        rootJson.put("code", 200)
+        val dataArray = JSONArray()
+        val item = JSONObject()
+        item.put("id", songId)
+        item.put("url", "https://m701.music.126.net/official_vip_$songId.mp3")
+        item.put("br", 320000)
+        item.put("code", 200)
+        item.put("fee", 1)
+        item.put("payed", 1) // User has VIP / track is paid
+        item.put("trialMode", 0)
+        item.put("freeTrialPrivilege", JSONObject("""{"resConsumable":false,"userConsumable":false}"""))
+        item.put("freeTimeTrialPrivilege", JSONObject("""{"type":0,"remainTime":0}"""))
+        item.put("freeTrialInfo", JSONObject.NULL)
+        dataArray.put(item)
+        rootJson.put("data", dataArray)
+
+        val result = resolver.processPlayerUrl(playerUrlEndpoint, rootJson.toString())
+        assertNull("VIP track with valid URL and payed=1 MUST NOT be replaced, returning null (unmodified)", result)
+        assertFalse("AudioMatcher must not be called for playable VIP track", audioMatcherCalled)
+    }
+
     // =========================================================================
     // SECTION 3: Cache Fallback, Cache Miss & Error Handling
     // =========================================================================

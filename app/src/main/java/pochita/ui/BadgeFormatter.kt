@@ -61,12 +61,26 @@ object BadgeFormatter {
     fun resolveFormat(br: Int): String = if (br >= 900000) "FLAC" else "MP3"
 
     /**
-     * Formats compact badge text (e.g. "[酷我·320K]" or "[酷我·320K] 晴天 (Live)").
+     * Formats compact pill badge text strictly containing source and bitrate (e.g. "[波点·320K]").
+     * Used exclusively by PlayerBadgeManager for on-screen status pills to prevent layout overflow.
      */
-    fun formatBadgeText(event: ReplaceEvent): String {
+    fun formatPillBadgeText(event: ReplaceEvent): String {
+        val shortSource = formatShortSource(event.matchedSource)
+        val quality = formatBitrate(event.br)
+        return "[$shortSource·$quality]"
+    }
+
+    /**
+     * Formats badge text (e.g. "[酷我·320K]" or "[酷我·320K] 晴天 (Live)").
+     */
+    fun formatBadgeText(event: ReplaceEvent, includeMatchedTitle: Boolean = true): String {
         val shortSource = formatShortSource(event.matchedSource)
         val quality = formatBitrate(event.br)
         val prefix = "[$shortSource·$quality]"
+
+        if (!includeMatchedTitle) {
+            return prefix
+        }
 
         val matchedTitle = event.matchedTitle.trim()
         val originalTitle = event.originalTitle.trim()

@@ -70,7 +70,7 @@ object PlayerBadgeManager {
                 // 3. Apply replaced badge text and styling
                 val isDark = isDarkTheme(activity)
                 styleReplacedBadgeView(badgeView, isDark)
-                badgeView.text = BadgeFormatter.formatBadgeText(event)
+                badgeView.text = BadgeFormatter.formatPillBadgeText(event)
                 badgeView.visibility = View.VISIBLE
 
                 // 4. Set click listener to display replacement detail AlertDialog
