@@ -2,6 +2,7 @@ package pochita.resolver
 
 import org.json.JSONObject
 import org.json.JSONTokener
+import pochita.codec.EApiCrypto
 import pochita.common.UnmHttpClient
 import pochita.common.UnmLogger
 import pochita.common.UnmLruCache
@@ -147,22 +148,31 @@ class PlayerUrlResolver(
                 val code = item.optInt("code", 200)
                 val payed = item.optInt("payed", 0)
 
-                // Precise trial detection:
-                // - Explicit trial indicators: freeTrialInfo (e.g. 30s preview), trialMode != 0, urlTrial, positive remainTime
-                // - Privilege-based trial: freeTrialPrivilege is present when the user has NOT paid/subscribed (payed == 0).
-                //   If user has VIP (payed == 1) and no trial snippet, it is full official audio and must NOT be replaced.
+                // Precise trial & restriction detection:
+                // 1. Explicit trial snippet (e.g. 30s preview)
                 val freeTrialInfo = item.optJSONObject("freeTrialInfo")
                 val hasFreeTrialInfo = freeTrialInfo != null && freeTrialInfo.length() > 0
+
+                // 2. Explicit trialMode flag is non-zero
                 val isTrialMode = item.optInt("trialMode", 0) != 0
+
+                // 3. urlTrial is present
                 val hasUrlTrial = item.has("urlTrial") && !item.isNull("urlTrial")
+
+                // 4. Time trial specifies remaining trial quota or non-zero trial type
                 val freeTimeTrial = item.optJSONObject("freeTimeTrialPrivilege")
                 val hasTimeTrial = (freeTimeTrial?.optInt("remainTime", 0) ?: 0) > 0 ||
                         (freeTimeTrial?.optInt("type", 0) ?: 0) != 0
-                val freeTrialPriv = item.optJSONObject("freeTrialPrivilege")
-                val cannotListen = freeTrialPriv?.optString("cannotListenReason", "")?.isNotBlank() == true
-                val hasTrialPrivilege = (freeTrialPriv != null || freeTimeTrial != null) && payed == 0
 
-                val hasTrial = hasFreeTrialInfo || isTrialMode || hasUrlTrial || hasTimeTrial || cannotListen || hasTrialPrivilege
+                // 5. cannotListenReason > 0 indicates unplayable restriction (e.g. copyright/VIP required)
+                val freeTrialPriv = item.optJSONObject("freeTrialPrivilege")
+                val cannotListenReason = freeTrialPriv?.let {
+                    if (it.isNull("cannotListenReason")) 0
+                    else it.optInt("cannotListenReason", 0)
+                } ?: 0
+                val cannotListen = cannotListenReason > 0
+
+                val hasTrial = hasFreeTrialInfo || isTrialMode || hasUrlTrial || hasTimeTrial || cannotListen
 
                 val needUnblock = !hasValidUrl || br <= 0 || code != 200 || hasTrial
                 if (!needUnblock) {
@@ -214,7 +224,12 @@ class PlayerUrlResolver(
                         val estimatedBytes = (songInfo.durationMs / 1000) * (actualBr / 8)
                         item.put("size", estimatedBytes)
                     }
-                    if (matched.md5.isNotEmpty()) item.put("md5", matched.md5) else item.remove("md5")
+                    val finalMd5 = when {
+                        matched.md5.isNotBlank() -> matched.md5
+                        item.optString("md5", "").isNotBlank() && item.optString("md5") != "null" -> item.getString("md5")
+                        else -> EApiCrypto.md5(matched.url)
+                    }
+                    item.put("md5", finalMd5)
 
                     item.remove("freeTrialInfo")
                     item.remove("freeTrialPrivilege")

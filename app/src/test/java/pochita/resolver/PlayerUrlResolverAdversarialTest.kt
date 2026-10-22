@@ -132,7 +132,7 @@ class PlayerUrlResolverAdversarialTest {
                     7 -> {
                         item.put("url", "https://m701.music.126.net/privilege_trial_$songId.mp3")
                         item.put("br", 128000)
-                        item.put("freeTrialPrivilege", JSONObject("""{"userConsumable":false}"""))
+                        item.put("freeTrialPrivilege", JSONObject("""{"userConsumable":false,"cannotListenReason":1}"""))
                     }
                 }
             }
@@ -298,11 +298,11 @@ class PlayerUrlResolverAdversarialTest {
                 it.put("code", 200)
                 it.put("freeTrialInfo", JSONObject("""{"start":0,"end":30}"""))
             },
-            DefectCase("14. freeTrialPrivilege Present", 2014L) {
+            DefectCase("14. freeTrialPrivilege with cannotListenReason Present", 2014L) {
                 it.put("url", "https://valid.url/trial.mp3")
                 it.put("br", 320000)
                 it.put("code", 200)
-                it.put("freeTrialPrivilege", JSONObject("""{"resConsumable":false}"""))
+                it.put("freeTrialPrivilege", JSONObject("""{"resConsumable":false,"cannotListenReason":1}"""))
             },
             DefectCase("15. freeTimeTrialPrivilege Present", 2015L) {
                 it.put("url", "https://valid.url/trial.mp3")
@@ -385,17 +385,49 @@ class PlayerUrlResolverAdversarialTest {
         item.put("br", 320000)
         item.put("code", 200)
         item.put("fee", 1)
-        item.put("payed", 1) // User has VIP / track is paid
+        item.put("payed", 0) // In NetEase API, payed is 0 for VIP subscription tracks
         item.put("trialMode", 0)
-        item.put("freeTrialPrivilege", JSONObject("""{"resConsumable":false,"userConsumable":false}"""))
+        item.put("freeTrialPrivilege", JSONObject("""{"resConsumable":false,"userConsumable":false,"cannotListenReason":null}"""))
         item.put("freeTimeTrialPrivilege", JSONObject("""{"type":0,"remainTime":0}"""))
         item.put("freeTrialInfo", JSONObject.NULL)
         dataArray.put(item)
         rootJson.put("data", dataArray)
 
         val result = resolver.processPlayerUrl(playerUrlEndpoint, rootJson.toString())
-        assertNull("VIP track with valid URL and payed=1 MUST NOT be replaced, returning null (unmodified)", result)
+        assertNull("VIP track with valid URL and cannotListenReason=null MUST NOT be replaced, returning null (unmodified)", result)
         assertFalse("AudioMatcher must not be called for playable VIP track", audioMatcherCalled)
+    }
+
+    @Test
+    fun testRestrictedTrackGeneratesOrPreservesValidMd5() {
+        val songId = 998877L
+        songCache.put(songId, SongInfo(songId, "测试无MD5歌曲", "歌手", 180000L))
+
+        val resolver = PlayerUrlResolver(
+            songCache = songCache,
+            audioMatcher = {
+                // Return matched audio with empty MD5
+                MatchedAudio("https://replacement.cdn/song.mp3", br = 320000, md5 = "")
+            },
+            songDetailFetcher = null
+        )
+
+        val rootJson = JSONObject()
+        rootJson.put("code", 200)
+        val dataArray = JSONArray()
+        val item = JSONObject()
+        item.put("id", songId)
+        item.put("url", "")
+        item.put("br", 0)
+        item.put("code", 404)
+        dataArray.put(item)
+        rootJson.put("data", dataArray)
+
+        val result = resolver.processPlayerUrl(playerUrlEndpoint, rootJson.toString())
+        assertNotNull(result)
+        val resItem = JSONObject(result!!).getJSONArray("data").getJSONObject(0)
+        val md5 = resItem.getString("md5")
+        assertTrue("MD5 must be present and 32-character hex to prevent player crash", md5.length == 32)
     }
 
     // =========================================================================
